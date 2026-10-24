@@ -1,0 +1,290 @@
+object Atlas: TForm
+  Width = 1020
+  Height = 680
+  Caption = 'Atlas'
+  Position = poScreenCenter
+  OnCreate = AtlasCreate
+  OnClose = AtlasClose
+  object StatusBar: TStatusBar
+    Top = 628
+    Width = 1016
+    SimpleText = 'Atlas'
+  end
+  object FilterBar: TToolBar
+    Width = 1016
+    Height = 44
+    object FindLabel: TLabel
+      Left = 4
+      Top = 11
+      Width = 42
+      Height = 22
+      Caption = 'Find'
+      AutoSize = False
+    end
+    object FilterEdit: TEdit
+      Left = 50
+      Top = 9
+      Width = 220
+      Hint = 'Name, region, kind, or a word in the notes'
+      OnChange = FilterEditChange
+    end
+    object KindLabel: TLabel
+      Left = 274
+      Top = 11
+      Width = 42
+      Height = 22
+      Caption = 'Kind'
+      AutoSize = False
+    end
+    object KindFilter: TComboBox
+      Left = 320
+      Top = 8
+      Width = 150
+      Items = 'All\nCity\nHarbor\nCoast\nStone\nValley\nRuin'
+      ItemIndex = 0
+      Text = 'All'
+      OnChange = KindFilterChange
+    end
+    object VisitedOnly: TCheckBox
+      Left = 474
+      Top = 10
+      Width = 130
+      Height = 24
+      OnClick = VisitedOnlyClick
+      Caption = 'Visited only'
+    end
+  end
+  object RegionPane: TPanel
+    Top = 44
+    Width = 200
+    Height = 584
+    Align = alLeft
+    Bevel = bvNone
+    object RegionCaption: TLabel
+      Width = 200
+      Height = 22
+      Align = alTop
+      Font.Bold = True
+      Caption = 'Regions'
+      AutoSize = False
+    end
+    object RegionTree: TTreeView
+      Top = 22
+      Width = 200
+      Height = 562
+      Align = alClient
+    end
+  end
+  object RegionSplit: TSplitter
+    Left = 200
+    Top = 44
+    Width = 6
+    Height = 584
+  end
+  object ListPane: TPanel
+    Left = 206
+    Top = 44
+    Width = 230
+    Height = 584
+    Align = alLeft
+    Bevel = bvNone
+    object ListCaption: TLabel
+      Width = 230
+      Height = 22
+      Align = alTop
+      Font.Bold = True
+      Caption = 'Places'
+      AutoSize = False
+    end
+    object PlaceList: TListBox
+      Top = 22
+      Width = 230
+      Height = 562
+      Align = alClient
+      OnClick = PlaceListClick
+    end
+  end
+  object PlaceSplit: TSplitter
+    Left = 436
+    Top = 44
+    Width = 6
+    Height = 584
+  end
+  object Pages: TPageControl
+    Left = 442
+    Top = 44
+    Width = 574
+    Height = 584
+    Align = alClient
+    object PlacePage: TTabSheet
+      Width = 574
+      Height = 584
+      Caption = 'Place'
+      object DetailGroup: TGroupBox
+        Width = 572
+        Height = 200
+        Align = alTop
+        Caption = 'This place'
+        object NameLabel: TLabel
+          Left = 16
+          Top = 8
+          Width = 80
+          Height = 22
+          Caption = 'Name'
+          AutoSize = False
+        end
+        object NameEdit: TEdit
+          Left = 108
+          Top = 4
+          Width = 444
+          Anchors = 'akLeft,akTop,akRight'
+          OnChange = NameEditChange
+        end
+        object KindCaption: TLabel
+          Left = 16
+          Top = 44
+          Width = 80
+          Height = 22
+          Caption = 'Kind'
+          AutoSize = False
+        end
+        object KindCombo: TComboBox
+          Left = 108
+          Top = 40
+          Width = 168
+          Items = 'City\nHarbor\nCoast\nStone\nValley\nRuin'
+          ItemIndex = 0
+          Text = 'City'
+          OnChange = KindComboChange
+        end
+        object VisitedCheck: TCheckBox
+          Left = 296
+          Top = 42
+          Width = 120
+          Height = 24
+          OnClick = VisitedCheckClick
+          Caption = 'Visited'
+        end
+        object RegionLabel: TLabel
+          Left = 16
+          Top = 80
+          Width = 80
+          Height = 22
+          Caption = 'Region'
+          AutoSize = False
+        end
+        object RegionCombo: TComboBox
+          Left = 108
+          Top = 76
+          Width = 240
+          Items = 'Mediterranean\nNorth Atlantic\nHighlands\nDesert roads\nPacific'
+          ItemIndex = 0
+          Text = 'Mediterranean'
+          Style = csDropDown
+          OnChange = RegionComboChange
+        end
+        object InterestLabel: TLabel
+          Left = 16
+          Top = 116
+          Width = 80
+          Height = 22
+          Caption = 'Interest'
+          AutoSize = False
+        end
+        object InterestBar: TTrackBar
+          Left = 108
+          Top = 110
+          Width = 404
+          Anchors = 'akLeft,akTop,akRight'
+          Hint = 'How much you want to go'
+          OnChange = InterestBarChange
+        end
+        object InterestProgress: TProgressBar
+          Left = 108
+          Top = 146
+          Width = 404
+          Height = 16
+          Anchors = 'akLeft,akTop,akRight'
+        end
+      end
+      object NotesCaption: TLabel
+        Top = 200
+        Width = 572
+        Height = 22
+        Align = alTop
+        Font.Bold = True
+        Caption = 'Notes'
+        AutoSize = False
+      end
+      object NotesMemo: TMemo
+        Top = 222
+        Width = 572
+        Height = 323
+        Align = alClient
+        Hint = 'Notes for this place'
+        Color = clWhite
+        OnChange = NotesMemoChange
+      end
+    end
+    object JournalPage: TTabSheet
+      Width = 574
+      Height = 584
+      Caption = 'Journal'
+      object JournalMemo: TMemo
+        Width = 572
+        Height = 545
+        Align = alClient
+        Color = '#FBF6EA'
+        Lines = 'This journal follows the session. Adding, removing, opening, and saving leave a line.'
+        ReadOnly = True
+      end
+    end
+  end
+  object MainMenu: TMainMenu
+    object FileMenu: TMenuItem
+      Caption = '&File'
+      object OpenItem: TMenuItem
+        Caption = '&Open catalog...'
+        ShortCut = 'Ctrl+O'
+        OnClick = OpenItemClick
+      end
+      object SaveItem: TMenuItem
+        Caption = '&Save catalog...'
+        ShortCut = 'Ctrl+S'
+        OnClick = SaveItemClick
+      end
+      object FileSep: TMenuItem
+        Caption = '-'
+      end
+      object QuitItem: TMenuItem
+        Caption = '&Quit'
+        ShortCut = 'Ctrl+Q'
+        OnClick = QuitItemClick
+      end
+    end
+    object PlaceMenu: TMenuItem
+      Caption = '&Place'
+      object AddItem: TMenuItem
+        Caption = '&Add place'
+        OnClick = AddItemClick
+      end
+      object RemoveItem: TMenuItem
+        Caption = '&Remove place'
+        OnClick = RemoveItemClick
+      end
+    end
+  end
+  object OpenDialog: TOpenDialog
+    Title = 'Open catalog'
+    Filter = 'Catalog|*.catalog|Text|*.txt|All files|*'
+    FileName = 'atlas.catalog'
+  end
+  object SaveDialog: TSaveDialog
+    Title = 'Save catalog'
+    Filter = 'Catalog|*.catalog|Text|*.txt|All files|*'
+    FileName = 'atlas.catalog'
+  end
+  object Clock: TTimer
+    OnTimer = ClockTimer
+  end
+end

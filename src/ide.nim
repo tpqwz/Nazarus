@@ -1,9 +1,11 @@
 ## Nazarus IDE. One window: menu, toolbar, component palette, form designer,
-## Nim source editor, object inspector, component tree, and a compile log.
+## Nim source editor, an Explore index, object inspector,
+## component tree, and a compile log. Design, Code, and Explore are the three views.
 
-import std/[os, osproc, posix, strutils]
+import std/[os, osproc, posix, strutils, unicode]
 import ncl
 import codegen
+import nimsyn
 import project
 
 type
@@ -12,6 +14,12 @@ type
     form: TForm
     source: string
     findFrom: int
+  TExploreKind = enum ekForm, ekControl, ekProc
+  TExploreHit = object
+    kind: TExploreKind
+    name: string
+    line: int
+    comp: TComponent
 
 var
   proj: TProject
@@ -20,21 +28,37 @@ var
   ideForm: TForm
   toolbar: TToolBar
   palette: TScrollBox
+  paletteOn: bool = true
   tree: TTreeView
+  inspectorPane: TPanel
   inspector: TScrollBox
   pages: TPageControl
   designSheet: TTabSheet
   codeSheet: TTabSheet
   host: TScrollBox
   editor: TSourceEditor
+  procBar: TPanel
+  procCombo: TComboBox
+  codeProcs: seq[TNimProc]
+  procSync: bool
+  exploreSheet: TTabSheet
+  exploreIndex: TListBox
+  exploreFilter: TEdit
+  exploreDetail: TMemo
+  exploreRows: seq[TExploreHit]
   findBar: TPanel
   findEdit: TEdit
   messages: TMemo
   statusBar: TStatusBar
   unitCombo: TComboBox
+  filePane: TPanel
+  fileList: TListBox
+  viewButtons: array[3, TButton]
+  viewItems: array[3, TMenuItem]
   buildProc: Process
   buildTimer: TTimer
   runAfter = false
+  runs: seq[Process]
   syncing = false
   inspMode = "props"
   ready = false
@@ -53,6 +77,9 @@ proc showUnit(u: TUnit)
 proc refreshTree()
 proc rebuildInspector()
 proc refreshEditor()
+proc showCode()
+proc showDesign()
+proc showExploreDetail()
 
 proc setStatus(s: string) =
   if statusBar != nil: statusBar.simpleText = s
@@ -63,6 +90,42 @@ proc logMsg(s: string) =
   cur.add(s)
   if cur.len > 60000: cur = cur[cur.len - 40000 .. ^1]
   messages.text = cur
+  messages.scrollToEnd()
+
+proc procAtLine(line: int): int =
+  ## Innermost routine whose span covers this 1-based line.
+  result = -1
+  var best = -1
+  for i in 0 ..< codeProcs.len:
+    let p = codeProcs[i]
+    if line >= p.line and line <= p.closeLine and p.depth >= best:
+      best = p.depth
+      result = i
+
+proc refreshCodeStructure() =
+  ## Fill the procedure dropdown and the scope rails from the editor text.
+  if editor == nil or procCombo == nil or not editor.hasBuffer: return
+  let src = editor.text
+  let outline = nimOutline(src)
+  var rails: seq[TScopeRail]
+  codeProcs.setLen(0)
+  if outline.ok:
+    for s in outline.scopes:
+      rails.add(TScopeRail(openLine: s.openLine, closeLine: s.closeLine, depth: s.depth))
+    codeProcs = outline.procs
+  else:
+    for item in procNames(src):
+      codeProcs.add(TNimProc(name: item.name, line: item.line, closeLine: item.line, depth: 0))
+  editor.scopeRails = rails
+  var names = @["(declarations)"]
+  for p in codeProcs:
+    names.add(p.name)
+  let at = procAtLine(editor.caretLine)
+  let idx = if at < 0: 0 else: at + 1
+  procSync = true
+  if names != procCombo.items: procCombo.items = names
+  if procCombo.itemIndex != idx: procCombo.itemIndex = idx
+  procSync = false
 
 proc currentSource(): string =
   if current == nil: return ""
@@ -75,24 +138,157 @@ proc pushEditor() =
   syncing = true
   editor.text = current.source
   syncing = false
+  refreshCodeStructure()
+
+proc exploreWanted(label, filt: string): bool =
+  filt.len == 0 or filt in label.toLowerAscii
+
+proc addExplore(rows: var seq[TExploreHit], labels: var seq[string],
+    hit: TExploreHit, label, filt: string) =
+  if not exploreWanted(label, filt): return
+  rows.add(hit)
+  labels.add(label)
+
+proc walkExplore(root: TComponent, rows: var seq[TExploreHit],
+    labels: var seq[string], filt: string) =
+  for c in root.ownedComponents:
+    addExplore(rows, labels, TExploreHit(kind: ekControl, name: c.name, comp: c),
+      c.className & "  " & c.name, filt)
+    walkExplore(c, rows, labels, filt)
+
+proc refreshExplore() =
+  ## Index of this unit: the form, its components, and its procs.
+  if exploreIndex == nil: return
+  var rows: seq[TExploreHit]
+  var labels: seq[string]
+  let filt = if exploreFilter == nil: "" else: exploreFilter.text.toLowerAscii
+  if current != nil and current.form != nil:
+    let form = current.form
+    addExplore(rows, labels, TExploreHit(kind: ekForm, name: form.name, comp: form),
+      "form  " & form.name, filt)
+    walkExplore(form, rows, labels, filt)
+  if current != nil:
+    let src = generateUnit(current.form, currentSource())
+    let outline = nimOutline(src)
+    if outline.ok:
+      for item in outline.procs:
+        addExplore(rows, labels, TExploreHit(kind: ekProc, name: item.name, line: item.line),
+          "proc  " & item.name, filt)
+    else:
+      for item in procNames(src):
+        addExplore(rows, labels, TExploreHit(kind: ekProc, name: item.name, line: item.line),
+          "proc  " & item.name, filt)
+  exploreRows = rows
+  syncing = true
+  exploreIndex.items = labels
+  syncing = false
+  showExploreDetail()
+
+proc selectedExplore(): int =
+  if exploreIndex == nil: return -1
+  let i = exploreIndex.itemIndex
+  if i < 0 or i >= exploreRows.len: -1 else: i
+
+proc showExploreDetail() =
+  if exploreDetail == nil: return
+  let i = selectedExplore()
+  if i < 0:
+    exploreDetail.text = "Select a form, a component, or a proc."
+    return
+  let hit = exploreRows[i]
+  var lines: seq[string]
+  case hit.kind
+  of ekForm, ekControl:
+    let c = hit.comp
+    if c == nil:
+      exploreDetail.text = "That component is gone."
+      return
+    lines.add(c.name)
+    lines.add(c.className)
+    if c of TControl:
+      let t = TControl(c)
+      lines.add("Left " & $t.left & "   Top " & $t.top)
+      lines.add("Width " & $t.width & "   Height " & $t.height)
+    for p in publishedProps(c.className):
+      if p.kind == pkEvent:
+        let h = c.handler(p.name)
+        if h.len > 0: lines.add(p.name & " = " & h)
+    lines.add("")
+    lines.add("Double-click to show it on the form.")
+  of ekProc:
+    let unitName = if current == nil: "unit" else: current.name
+    lines.add(hit.name)
+    lines.add("proc · " & unitName & ".nim:" & $hit.line)
+    lines.add("")
+    lines.add("Double-click to open this line.")
+  exploreDetail.text = lines.join("\n")
+
+proc openExplore() =
+  if syncing: return
+  let i = selectedExplore()
+  if i < 0: return
+  let hit = exploreRows[i]
+  case hit.kind
+  of ekForm, ekControl:
+    if hit.comp != nil: selectComponent(hit.comp)
+    showDesign()
+  of ekProc:
+    showCode()
+    if editor != nil: editor.gotoLine(hit.line)
 
 proc refreshEditor() =
   if current == nil: return
   current.source = generateUnit(current.form, currentSource())
   pushEditor()
+  refreshExplore()
+
+proc markActiveView() =
+  ## The toolbar buttons stay in one place. The lit one is the view showing.
+  ## Checking a menu item would run its command again, so this update is quiet.
+  if pages == nil or syncing: return
+  let page = max(0, pages.activePageIndex)
+  syncing = true
+  for i in 0 .. 2:
+    if viewButtons[i] != nil:
+      viewButtons[i].color = if i == page: TColor(0xD3E3F6) else: TColor(0xF2F2F2)
+    if viewItems[i] != nil and viewItems[i].checked != (i == page):
+      viewItems[i].checked = i == page
+  syncing = false
+
+proc useCodeChrome(code: bool) =
+  ## The component tree, the inspector, and the palette belong to Design.
+  ## Code and Explore leave them hidden. Design brings them back.
+  ## The View check remembers whether Design should show the palette.
+  if tree != nil: tree.visible = not code
+  if inspectorPane != nil: inspectorPane.visible = not code
+  if palette != nil: palette.visible = paletteOn and not code
+  markActiveView()
 
 proc showCode() =
   if pages == nil: return
   pages.activePageIndex = 1
+  useCodeChrome(true)
   refreshEditor()
   if editor != nil: editor.focus()
 
 proc showDesign() =
   if pages == nil: return
-  if current != nil and editor != nil and editor.hasBuffer:
+  if current != nil and editor != nil and editor.hasBuffer and
+      pages.activePageIndex == 1:
     current.source = editor.text
   pages.activePageIndex = 0
+  useCodeChrome(false)
   refreshDesign()
+  focusDesign()
+
+proc showExplore() =
+  if pages == nil: return
+  if current != nil and editor != nil and editor.hasBuffer and
+      pages.activePageIndex == 1:
+    current.source = editor.text
+  pages.activePageIndex = 2
+  useCodeChrome(true)
+  refreshExplore()
 
 proc lineOf(src, needle: string): int =
   result = 1
@@ -282,6 +478,17 @@ proc refreshTree() =
   tree.expandAll()
   syncing = false
 
+proc fillFiles() =
+  ## The Code view lists unit sources. The row follows the unit that is open.
+  if fileList == nil: return
+  var names: seq[string] = @[]
+  var idx = -1
+  for i, u in units:
+    names.add(u.name & ".nim")
+    if u == current: idx = i
+  if names != fileList.items: fileList.items = names
+  if fileList.itemIndex != idx: fileList.itemIndex = idx
+
 proc fillUnits() =
   if unitCombo == nil or proj == nil: return
   syncing = true
@@ -292,6 +499,7 @@ proc fillUnits() =
       if n == current.name: idx = i
   unitCombo.itemIndex = idx
   syncing = false
+  fillFiles()
 
 proc showUnit(u: TUnit) =
   if u == nil: return
@@ -306,7 +514,9 @@ proc showUnit(u: TUnit) =
   fillUnits()
   if proj != nil: ideForm.caption = "Nazarus - " & proj.name & " - " & u.name
   if pages.activePageIndex == 1: refreshEditor()
-  else: refreshDesign()
+  else:
+    refreshDesign()
+    focusDesign()
 
 proc programForms(): seq[TProgramForm] =
   for u in units:
@@ -337,8 +547,10 @@ proc closeUnits() =
     syncing = true
     editor.text = ""
     syncing = false
+    refreshCodeStructure()
   clearInspector()
   if tree != nil: tree.clear()
+  fillFiles()
 
 proc adopt(name: string, form: TForm, source: string): TUnit =
   result = TUnit(name: name, form: form, source: source)
@@ -432,17 +644,18 @@ proc finishBuild() =
   let outFile = if proj != nil: proj.outputFile else: ""
   close(buildProc)
   buildProc = nil
-  if buildTimer != nil: buildTimer.enabled = false
   if code == 0:
     logMsg("Compiled.\n")
     setStatus("Compiled")
     if runAfter and outFile.len > 0 and fileExists(outFile):
-      discard startProcess(outFile, proj.dir, [], nil, {poParentStreams})
+      runs.add(startProcess(outFile, proj.dir, [], nil, {poParentStreams}))
       setStatus("Running " & proj.name)
   else:
     logMsg("Compile failed (" & $code & ").\n")
     setStatus("Compile failed")
   runAfter = false
+  if buildTimer != nil:
+    buildTimer.enabled = runs.len > 0
 
 proc drainBuild() =
   if buildProc == nil: return
@@ -454,8 +667,22 @@ proc drainBuild() =
     copyMem(addr chunk[0], addr buf[0], n)
     logMsg(chunk)
 
+proc reapRuns() =
+  var kept: seq[Process]
+  for p in runs:
+    if p.running: kept.add(p)
+    else:
+      discard p.peekExitCode()
+      close(p)
+  let finished = kept.len < runs.len
+  runs = kept
+  if finished and buildProc == nil: setStatus("Program finished")
+
 proc pollBuild(sender: TObject) =
-  if buildProc == nil: return
+  reapRuns()
+  if buildProc == nil:
+    if runs.len == 0 and buildTimer != nil: buildTimer.enabled = false
+    return
   drainBuild()
   if not buildProc.running: finishBuild()
 
@@ -486,6 +713,45 @@ proc startBuild(andRun: bool) =
     buildTimer.onTimer = pollBuild
   buildTimer.enabled = true
   setStatus("Compiling...")
+
+proc projectSources(): seq[string] =
+  if proj == nil: return
+  for name in proj.units: result.add(proj.unitNim(name))
+  result.add(proj.programFile)
+
+proc lineCharRange(text: string, lineNo: int): tuple[start, length: int] =
+  if lineNo < 1: return (-1, 0)
+  var start = 0
+  var n = 1
+  for line in text.splitLines:
+    if n == lineNo: return (start, line.runeLen)
+    start += line.runeLen + 1
+    inc n
+  (-1, 0)
+
+proc unitForSource(path: string): TUnit =
+  if proj == nil or path.len == 0: return nil
+  for u in units:
+    if proj.unitNim(u.name) == path: return u
+
+proc jumpMessage() =
+  ## A click in Messages opens the unit a compiler line names.
+  if messages == nil or proj == nil: return
+  let lines = messages.text.splitLines
+  let at = messages.caretLine()
+  if at < 1 or at > lines.len: return
+  let site = compilerSite(lines[at - 1], projectSources())
+  if site.file.len == 0: return
+  let span = lineCharRange(messages.text, at)
+  if span.start >= 0: messages.selectRange(span.start, span.length)
+  let u = unitForSource(site.file)
+  if u == nil:
+    setStatus(site.file.extractFilename & " line " & $site.line & " is not an open unit")
+    return
+  showUnit(u)
+  showCode()
+  if editor != nil: editor.gotoLine(site.line, site.col)
+  setStatus(u.name & ".nim line " & $site.line)
 
 proc doCompile() = startBuild(false)
 proc doRun() = startBuild(true)
@@ -524,22 +790,78 @@ proc doQuit() = application.terminate()
 proc doAbout() =
   showMessage("Nazarus\nA Lazarus-style RAD GUI IDE for Nim.\nDesign the form, write Nim, press F9.")
 
+proc doDebugNote(sender: TObject) =
+  ## The Debug menu names the commands a debugger would own. None of them run yet.
+  var name = "That command"
+  if sender of TMenuItem:
+    name = TMenuItem(sender).caption.replace("&", "")
+  setStatus(name & " needs a debugger, and this version does not have one")
+
 proc wireDesign() =
   onDesignSelect = proc(c: TComponent) =
     if syncing: return
     rebuildInspector()
-    if c != nil: setStatus(c.name & ": " & c.className)
+    if designSelectionCount() > 1:
+      setStatus($designSelectionCount() & " selected")
+    elif c != nil:
+      setStatus(c.name & ": " & c.className)
   onDesignChange = proc() =
     if designTool().len > 0: setStatus("Place " & designTool())
+    elif designSelectionCount() > 1:
+      setStatus($designSelectionCount() & " selected")
     else: setStatus("Select")
     refreshTree()
   onDesignActivate = proc(c: TComponent) =
     ensureHandler(c)
+  onDesignNote = proc(s: string) = setStatus(s)
+
+proc editingCode(): bool =
+  pages != nil and pages.activePageIndex == 1
+
+proc doCut() =
+  if editingCode():
+    if editor != nil: editor.editCut()
+    return
+  discard designCut()
+
+proc doCopy() =
+  if editingCode():
+    if editor != nil: editor.editCopy()
+    return
+  discard designCopy()
+
+proc doPaste() =
+  if editingCode():
+    if editor != nil: editor.editPaste()
+    return
+  discard designPaste()
 
 proc armPalette(cls: string) =
   `designTool=`(cls)
   if cls.len == 0: setStatus("Select")
   else: setStatus("Place " & cls)
+
+proc refitChromeButtons() =
+  proc fit(b: TControl) =
+    let ns = b.naturalSize()
+    if ns.w < 2: return
+    b.setBounds(b.left, b.top, ns.w + 6, max(ns.h, 24))
+  if toolbar != nil:
+    var rowH = 28
+    for c in toolbar.childControls:
+      if c of TButton:
+        fit(c)
+        rowH = max(rowH, c.height)
+    toolbar.height = max(36, rowH + 10)
+  if palette != nil:
+    var rowH = 28
+    for c in palette.childControls:
+      if c of TButton:
+        fit(c)
+        rowH = max(rowH, c.height)
+    # The button row, plus the frame and the horizontal bar under it.
+    palette.height = rowH + 26
+    palette.setMinContent(0, rowH + 4)
 
 proc buildChrome() =
   ideForm = TForm.new()
@@ -568,10 +890,70 @@ proc buildChrome() =
   miQuit.shortCut = "Ctrl+Q"
   miQuit.onClick = proc(sender: TObject) = doQuit()
 
+  let mEdit = menu.add("&Edit")
+  let miCut = mEdit.add("Cu&t")
+  miCut.onClick = proc(sender: TObject) = doCut()
+  let miCopy = mEdit.add("&Copy")
+  miCopy.onClick = proc(sender: TObject) = doCopy()
+  let miPaste = mEdit.add("&Paste")
+  miPaste.onClick = proc(sender: TObject) = doPaste()
+  discard mEdit.add("-")
+  let mAlign = mEdit.add("&Align")
+  proc alignTo(edge: TDesignAlign) =
+    if designForm() == nil:
+      setStatus("Open a form to align controls")
+      return
+    showDesign()
+    if designAlign(edge) < 2:
+      setStatus("Select two or more controls to align")
+  # The edge is a parameter, so each item keeps its own. A loop variable
+  # would be one slot and every item would align the same way.
+  proc alignItem(caption: string, edge: TDesignAlign) =
+    let it = mAlign.add(caption)
+    it.onClick = proc(sender: TObject) = alignTo(edge)
+  alignItem("Align &Left", daLeft)
+  alignItem("Align &Right", daRight)
+  alignItem("Align &Top", daTop)
+  alignItem("Align &Bottom", daBottom)
+  alignItem("Center &Horizontally", daCenterH)
+  alignItem("Center &Vertically", daCenterV)
+
   let mView = menu.add("&View")
-  let miToggle = mView.add("&Toggle Form/Unit")
+  let miDesign = mView.add("&Design")
+  miDesign.onClick = proc(sender: TObject) =
+    if not syncing: showDesign()
+  let miCode = mView.add("&Code")
+  miCode.onClick = proc(sender: TObject) =
+    if not syncing: showCode()
+  let miExplore = mView.add("&Explore")
+  miExplore.shortCut = "F4"
+  miExplore.onClick = proc(sender: TObject) =
+    if not syncing: showExplore()
+  viewItems[0] = miDesign
+  viewItems[1] = miCode
+  viewItems[2] = miExplore
+  miDesign.checked = true
+  miCode.checked = true
+  miExplore.checked = true
+  miCode.checked = false
+  miExplore.checked = false
+  discard mView.add("-")
+  let miToggle = mView.add("&Toggle Design/Code")
   miToggle.shortCut = "F12"
   miToggle.onClick = proc(sender: TObject) = doToggleView()
+  discard mView.add("-")
+  let miToolbar = mView.add("&Toolbar")
+  miToolbar.checked = true
+  miToolbar.onClick = proc(sender: TObject) =
+    if toolbar != nil: toolbar.visible = TMenuItem(sender).checked
+  let miPalette = mView.add("Component &Palette")
+  miPalette.checked = true
+  miPalette.onClick = proc(sender: TObject) =
+    if syncing: return
+    paletteOn = TMenuItem(sender).checked
+    let designing = pages == nil or pages.activePageIndex == 0
+    if palette != nil: palette.visible = paletteOn and designing
+  discard mView.add("-")
   let miFind = mView.add("&Find...")
   miFind.shortCut = "Ctrl+F"
   miFind.onClick = proc(sender: TObject) = doFind()
@@ -583,6 +965,22 @@ proc buildChrome() =
   let miBuild = mRun.add("&Compile")
   miBuild.shortCut = "Ctrl+F9"
   miBuild.onClick = proc(sender: TObject) = doCompile()
+
+  let mDebug = menu.add("&Debug")
+  proc debugItem(caption: string) =
+    let it = mDebug.add(caption)
+    it.onClick = doDebugNote
+  debugItem("Step &Into")
+  debugItem("Step &Over")
+  debugItem("Step O&ut")
+  debugItem("Run to &Cursor")
+  discard mDebug.add("-")
+  debugItem("Toggle &Breakpoint")
+  discard mDebug.add("-")
+  debugItem("&Watches")
+  debugItem("&Breakpoints")
+  discard mDebug.add("-")
+  debugItem("Debugger &Options...")
 
   let mHelp = menu.add("&Help")
   let miAbout = mHelp.add("&About")
@@ -598,22 +996,29 @@ proc buildChrome() =
   messages.align = alBottom
   messages.height = 110
   messages.readOnly = true
+  messages.wordWrap = false
+  messages.monospace = true
+  messages.onClick = proc(sender: TObject) = jumpMessage()
 
   toolbar = TToolBar.new(ideForm)
   toolbar.parent = ideForm
   toolbar.align = alTop
+  proc fitButton(b: TButton) =
+    let ns = b.naturalSize()
+    # A few pixels of slack keeps the theme from ellipsizing the caption.
+    b.setBounds(b.left, b.top, ns.w + 6, ns.h)
   proc toolButton(caption: string, act: proc()) =
     let b = TButton.new(ideForm)
     b.caption = caption
-    b.width = 78
-    b.height = 26
     b.parent = toolbar
     b.onClick = proc(sender: TObject) = act()
+    fitButton(b)
   toolButton("New", doNew)
   toolButton("Open", doOpen)
   toolButton("Save", doSave)
   toolButton("Compile", doCompile)
   toolButton("Run", doRun)
+  toolbar.height = max(36, toolbar.childControls[^1].height + 10)
   unitCombo = TComboBox.new(ideForm)
   unitCombo.style = csDropDownList
   unitCombo.width = 140
@@ -623,31 +1028,52 @@ proc buildChrome() =
     if syncing or proj == nil: return
     let i = unitCombo.itemIndex
     if i >= 0 and i < units.len: showUnit(units[i])
+  # These stay on the toolbar. The notebook tabs used to sit in the page
+  # that resizes, so Design and Code jumped when the side panels hid.
+  proc viewButton(caption: string, act: proc()): TButton =
+    result = TButton.new(ideForm)
+    result.caption = caption
+    result.parent = toolbar
+    result.color = TColor(0xF2F2F2)
+    result.onClick = proc(sender: TObject) = act()
+    fitButton(result)
+  viewButtons[0] = viewButton("Design", showDesign)
+  viewButtons[1] = viewButton("Code", showCode)
+  viewButtons[2] = viewButton("Explore", showExplore)
+  viewButtons[0].color = TColor(0xD3E3F6)
+  toolbar.height = max(toolbar.height, viewButtons[0].height + 10)
 
   palette = TScrollBox.new(ideForm)
+  # lkRow has to be set before the scroll box is realized. It builds a
+  # horizontal box; a layout in that scrolled window clips every caption.
+  palette.layout = lkRow
   palette.parent = ideForm
   palette.align = alTop
-  palette.height = 62
-  palette.layout = lkWrap
   palette.color = clBtnFace
+  var rowH = 28
   let arrow = TButton.new(ideForm)
   arrow.caption = "Arrow"
-  arrow.width = 64
-  arrow.height = 24
   arrow.hint = "Select"
   arrow.parent = palette
   arrow.onClick = proc(sender: TObject) = armPalette("")
+  fitButton(arrow)
+  rowH = max(rowH, arrow.height)
+  # Each button has to close over its own class. The loop variable is one
+  # slot, so a closure written in the loop would place whichever component
+  # was registered last.
+  proc paletteClick(cls: string): proc(sender: TObject) =
+    result = proc(sender: TObject) = armPalette(cls)
   for item in paletteItems():
     let cls = item.cls
-    let cap = item.caption
-    let cat = item.category
     let b = TButton.new(ideForm)
-    b.caption = cap
-    b.width = max(72, cap.len * 8 + 16)
-    b.height = 24
-    b.hint = cat
+    b.caption = item.caption
+    b.hint = item.category
     b.parent = palette
-    b.onClick = proc(sender: TObject) = armPalette(cls)
+    b.onClick = paletteClick(cls)
+    fitButton(b)
+    rowH = max(rowH, b.height)
+  # One row of full captions, plus room for the horizontal bar.
+  palette.height = rowH + 26
 
   tree = TTreeView.new(ideForm)
   tree.parent = ideForm
@@ -658,11 +1084,12 @@ proc buildChrome() =
     if node.obj of TComponent:
       selectComponent(TComponent(node.obj))
 
-  let right = TPanel.new(ideForm)
-  right.parent = ideForm
-  right.align = alRight
-  right.width = 260
-  right.bevel = bvNone
+  inspectorPane = TPanel.new(ideForm)
+  inspectorPane.parent = ideForm
+  inspectorPane.align = alRight
+  inspectorPane.width = 260
+  inspectorPane.bevel = bvNone
+  let right = inspectorPane
   let propBtn = TButton.new(ideForm)
   propBtn.caption = "Properties"
   propBtn.align = alTop
@@ -686,6 +1113,7 @@ proc buildChrome() =
   pages = TPageControl.new(ideForm)
   pages.parent = ideForm
   pages.align = alClient
+  pages.showTabs = false
   designSheet = TTabSheet.new(ideForm)
   designSheet.caption = "Design"
   designSheet.parent = pages
@@ -698,8 +1126,52 @@ proc buildChrome() =
   host.align = alClient
   host.color = TColor(0x3A3A3A)
 
+  # Files sit to the left of the editor, the way Droide lists sources beside
+  # the scope rails. The procedure strip stays over the editor only.
+  filePane = TPanel.new(ideForm)
+  filePane.parent = codeSheet
+  filePane.align = alLeft
+  filePane.width = 200
+  filePane.bevel = bvNone
+  let fileHead = TLabel.new(ideForm)
+  fileHead.parent = filePane
+  fileHead.autoSize = false
+  fileHead.caption = "Files"
+  fileHead.align = alTop
+  fileHead.height = 22
+  fileList = TListBox.new(ideForm)
+  fileList.parent = filePane
+  fileList.align = alClient
+  fileList.onClick = proc(sender: TObject) =
+    if syncing: return
+    let i = fileList.itemIndex
+    if i >= 0 and i < units.len and units[i] != current:
+      showUnit(units[i])
+
+  let codeBody = TPanel.new(ideForm)
+  codeBody.parent = codeSheet
+  codeBody.align = alClient
+  codeBody.bevel = bvNone
+
+  procBar = TPanel.new(ideForm)
+  procBar.parent = codeBody
+  procBar.align = alTop
+  procBar.bevel = bvNone
+  # The procedure list is the strip across the editor, the way Visual Basic
+  # filled its code window. A fixed 360px box left a long empty remainder.
+  procBar.height = 28
+  procCombo = TComboBox.new(ideForm)
+  procCombo.parent = procBar
+  procCombo.style = csDropDownList
+  procCombo.align = alClient
+  procCombo.onChange = proc(sender: TObject) =
+    if procSync or editor == nil: return
+    let i = procCombo.itemIndex
+    if i <= 0: editor.gotoLine(1)
+    elif i - 1 < codeProcs.len: editor.gotoLine(codeProcs[i - 1].line)
+
   findBar = TPanel.new(ideForm)
-  findBar.parent = codeSheet
+  findBar.parent = codeBody
   findBar.align = alTop
   findBar.height = 32
   findBar.visible = false
@@ -721,17 +1193,62 @@ proc buildChrome() =
     if current != nil: current.findFrom = 0
 
   editor = TSourceEditor.new(ideForm)
-  editor.parent = codeSheet
+  editor.parent = codeBody
   editor.align = alClient
+  editor.onChange = proc(sender: TObject) = refreshCodeStructure()
+  editor.onCaret = proc(line: int) =
+    if procSync or procCombo == nil: return
+    let at = procAtLine(line)
+    let idx = if at < 0: 0 else: at + 1
+    if procCombo.itemIndex != idx:
+      procSync = true
+      procCombo.itemIndex = idx
+      procSync = false
+
+  exploreSheet = TTabSheet.new(ideForm)
+  exploreSheet.caption = "Explore"
+  exploreSheet.parent = pages
+  let exploreSide = TPanel.new(ideForm)
+  exploreSide.parent = exploreSheet
+  exploreSide.align = alLeft
+  exploreSide.width = 260
+  exploreSide.bevel = bvNone
+  exploreFilter = TEdit.new(ideForm)
+  exploreFilter.parent = exploreSide
+  exploreFilter.align = alTop
+  exploreFilter.text = ""
+  exploreFilter.onChange = proc(sender: TObject) = refreshExplore()
+  exploreIndex = TListBox.new(ideForm)
+  exploreIndex.parent = exploreSide
+  exploreIndex.align = alClient
+  exploreIndex.onClick = proc(sender: TObject) = showExploreDetail()
+  exploreIndex.onDblClick = proc(sender: TObject) = openExplore()
+  exploreDetail = TMemo.new(ideForm)
+  exploreDetail.parent = exploreSheet
+  exploreDetail.align = alClient
+  exploreDetail.readOnly = true
+  exploreDetail.wordWrap = true
+  exploreDetail.text = "Select a form, a component, or a proc."
 
   pages.onChange = proc(sender: TObject) =
     if not ready or current == nil: return
-    if pages.activePageIndex == 1: refreshEditor()
+    let page = pages.activePageIndex
+    useCodeChrome(page != 0)
+    if page == 1: refreshEditor()
+    elif page == 2: refreshExplore()
     else:
       current.source = currentSource()
       refreshDesign()
 
   ideForm.onShow = proc(sender: TObject) =
+    # Captions were measured before any widget existed, so every palette
+    # button kept the default 75px and the long ones were clipped.
+    refitChromeButtons()
+    if procCombo != nil and procBar != nil:
+      # naturalSize clears the size request. Assigning the height lays the
+      # strip out again, or the combo keeps only the width of its caption.
+      let h = procCombo.naturalSize().h
+      procBar.height = if h > 8: h else: procBar.height
     pushEditor()
     refreshDesign()
   ideForm.onClose = proc(sender: TObject, action: var TCloseAction) =

@@ -90,6 +90,14 @@ proc onRowSelected(box, row, data: pointer) {.cdecl.} =
   if lb.onClick != nil: guard proc() = lb.onClick(lb)
   if lb.onChange != nil: guard proc() = lb.onChange(lb)
 
+proc onRowActivated(box, row, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TListBox) or TListBox(c).refreshing: return
+  let lb = TListBox(c)
+  if row != nil: lb.fItemIndex = int(gtk_list_box_row_get_index(row))
+  if lb.designing: return
+  if lb.onDblClick != nil: guard proc() = lb.onDblClick(lb)
+
 proc onRangeChanged(widget: pointer, data: pointer) {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TTrackBar) or TTrackBar(c).refreshing: return
@@ -112,6 +120,10 @@ proc onMenuActivate(widget: pointer, data: pointer) {.cdecl.} =
   if c == nil or not (c of TMenuItem): return
   let item = TMenuItem(c)
   if item.designing: return
+  # A check item toggles itself before activate. Read that, or the handler
+  # still sees the previous Checked value.
+  if item.fCheckable and item.gtkItem != nil:
+    item.fChecked = gtk_check_menu_item_get_active(item.gtkItem) != 0
   if item.onClick != nil: guard proc() = item.onClick(item)
 
 proc onDeleteEvent(widget, event, data: pointer): cint {.cdecl.} =
@@ -161,6 +173,7 @@ proc onMemoChanged(widget: pointer, data: pointer) {.cdecl.} =
     if not m.designing and m.onChange != nil: guard proc() = m.onChange(m)
   elif c of TSourceEditor:
     let ed = TSourceEditor(c)
+    if ed.gutter != nil: gtk_widget_queue_draw(ed.gutter)
     if ed.mute: return
     if ed.onChange != nil: guard proc() = ed.onChange(ed)
 
@@ -175,6 +188,18 @@ proc createButton(self: TControl) =
   self.handle = gtk_button_new_with_label("")
   connect(self.handle, "clicked", cast[pointer](onClicked), self.liveId)
   pushButton(self)
+
+proc naturalSize*(self: TControl): tuple[w, h: int] =
+  ## Size the widget wants for its content. A size request already applied is
+  ## cleared first, because that request becomes the minimum and hides the label.
+  if headless or self.handle == nil:
+    return (max(1, self.fWidth), max(1, self.fHeight))
+  gtk_widget_set_size_request(self.handle, -1, -1)
+  var nat: GtkRequisition
+  gtk_widget_get_preferred_size(self.handle, nil, addr nat)
+  let w = if nat.width > 1: int(nat.width) else: max(1, self.fWidth)
+  let h = if nat.height > 1: int(nat.height) else: max(1, self.fHeight)
+  (w, h)
 
 proc new*(_: typedesc[TButton], owner: TComponent = nil): TButton =
   result = TButton()
@@ -277,6 +302,23 @@ proc `text=`*(self: TMemo, v: string) =
     self.refreshing = true
     setBufferText(self.inner, v)
     self.refreshing = false
+
+proc scrollMemoEnd(data: pointer): cint {.cdecl.} =
+  let c = recall(data)
+  if c != nil and c of TMemo:
+    let m = TMemo(c)
+    if m.handle != nil:
+      let adj = gtk_scrolled_window_get_vadjustment(m.handle)
+      if adj != nil:
+        let top = gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj)
+        gtk_adjustment_set_value(adj, if top > 0: top else: 0)
+  0
+
+proc scrollToEnd*(self: TMemo) =
+  ## Replacing the buffer jumps back to the first line. The compile log
+  ## wants the line that just arrived, after GTK has remeasured the text.
+  if headless or self.handle == nil: return
+  discard g_timeout_add(0, cast[pointer](scrollMemoEnd), cast[pointer](self.liveId))
 proc lines*(self: TMemo): string = self.fText
 proc `lines=`*(self: TMemo, v: string) = self.text = v
 proc readOnly*(self: TMemo): bool = self.fReadOnly
@@ -297,7 +339,57 @@ proc pushMemo(self: TControl) =
   if m.extra != nil:
     gtk_text_view_set_editable(m.extra, if m.fReadOnly: 0 else: 1)
     gtk_text_view_set_wrap_mode(m.extra, if m.fWordWrap: 2 else: 0)
+    gtk_text_view_set_monospace(m.extra, if m.fMonospace: 1 else: 0)
   m.refreshing = false
+
+proc `monospace=`*(self: TMemo, v: bool) =
+  self.fMonospace = v
+  if self.extra != nil: gtk_text_view_set_monospace(self.extra, if v: 1 else: 0)
+
+proc selectRange*(self: TMemo, start, length: int) =
+  ## Select `length` characters at `start` and scroll that spot into view.
+  ## Offsets count characters, so a multibyte letter is one position.
+  if headless or self.inner == nil: return
+  let a = max(0, start)
+  let b = a + max(0, length)
+  var ia, ib: array[32, int64]
+  gtk_text_buffer_get_iter_at_offset(self.inner, addr ia[0], cint(a))
+  gtk_text_buffer_get_iter_at_offset(self.inner, addr ib[0], cint(b))
+  gtk_text_buffer_select_range(self.inner, addr ia[0], addr ib[0])
+  if self.extra != nil:
+    gtk_text_view_scroll_to_iter(self.extra, addr ia[0], 0.05, 1, 0.0, 0.3)
+
+proc selection*(self: TMemo): tuple[start, length: int] =
+  if headless or self.inner == nil: return (-1, 0)
+  var ia, ib: array[32, int64]
+  if gtk_text_buffer_get_selection_bounds(self.inner, addr ia[0], addr ib[0]) == 0:
+    return (int(gtk_text_iter_get_offset(addr ia[0])), 0)
+  let s = int(gtk_text_iter_get_offset(addr ia[0]))
+  let e = int(gtk_text_iter_get_offset(addr ib[0]))
+  (min(s, e), abs(e - s))
+
+proc memoCaret(self: TMemo): tuple[line, column: int] =
+  ## 1-based insert caret. Both are 0 when the memo has no text buffer.
+  if self.inner == nil: return
+  let mark = gtk_text_buffer_get_insert(self.inner)
+  if mark == nil: return
+  var it: array[32, int64]
+  gtk_text_buffer_get_iter_at_mark(self.inner, addr it[0], mark)
+  (int(gtk_text_iter_get_line(addr it[0])) + 1, int(gtk_text_iter_get_line_offset(addr it[0])) + 1)
+
+proc caretLine*(self: TMemo): int = self.memoCaret.line
+proc caretColumn*(self: TMemo): int = self.memoCaret.column
+
+proc onMemoRelease(widget, ev, data: pointer): cint {.cdecl.} =
+  var b: cuint
+  discard gdk_event_get_button(ev, addr b)
+  if b != 1: return 0
+  let c = recall(data)
+  if c != nil and c of TMemo:
+    let m = TMemo(c)
+    if m.onClick != nil:
+      guard proc() = m.onClick(m)
+  0
 
 proc createMemo(self: TControl) =
   let m = TMemo(self)
@@ -313,6 +405,7 @@ proc createMemo(self: TControl) =
   m.extra = tv
   m.fWordWrap = true
   connect(buf, "changed", cast[pointer](onMemoChanged), m.liveId)
+  connect(tv, "button-release-event", cast[pointer](onMemoRelease), m.liveId)
   pushMemo(m)
 
 proc new*(_: typedesc[TMemo], owner: TComponent = nil): TMemo =
@@ -449,6 +542,7 @@ proc createList(self: TControl) =
   lb.handle = sw
   lb.inner = box
   connect(box, "row-selected", cast[pointer](onRowSelected), lb.liveId)
+  connect(box, "row-activated", cast[pointer](onRowActivated), lb.liveId)
   pushList(lb)
 
 proc new*(_: typedesc[TListBox], owner: TComponent = nil): TListBox =
@@ -495,9 +589,14 @@ proc `text=`*(self: TComboBox, v: string) =
 
 proc recreateCombo(self: TComboBox) =
   let parent = self.fParent
-  if self.handle != nil: gtk_widget_destroy(self.handle)
+  if self.socket != nil:
+    gtk_widget_destroy(self.socket)
+    self.socket = nil
+  elif self.handle != nil:
+    gtk_widget_destroy(self.handle)
   self.handle = nil
   self.placed = false
+  self.held = false
   self.css = nil
   if self.createImpl != nil: self.createImpl(self)
   self.applyChrome()
@@ -817,17 +916,101 @@ proc new*(_: typedesc[TSplitter], owner: TComponent = nil): TSplitter =
   result.fHeight = 80
   result.createImpl = createSplitter
 
+proc nudgeAdj(adj: pointer, delta: float) =
+  if adj == nil or abs(delta) < 0.0001: return
+  let lower = gtk_adjustment_get_lower(adj)
+  let upper = gtk_adjustment_get_upper(adj)
+  let page = gtk_adjustment_get_page_size(adj)
+  let step = max(32.0, page * 0.15)
+  var v = gtk_adjustment_get_value(adj) + delta * step
+  let maxv = max(lower, upper - page)
+  if v < lower: v = lower
+  if v > maxv: v = maxv
+  gtk_adjustment_set_value(adj, v)
+
+proc scrollBy(sw: pointer, ev: pointer, foldV = false): cint =
+  ## One wheel notch is a delta of about 1. Smooth pads send fractions of that.
+  if sw == nil or ev == nil: return 0
+  var dx, dy: cdouble
+  var dir: cuint
+  if gdk_event_get_scroll_deltas(ev, addr dx, addr dy) == 0:
+    if gdk_event_get_scroll_direction(ev, addr dir) == 0: return 0
+    if dir == 0: dy = -1
+    elif dir == 1: dy = 1
+    elif dir == 2: dx = -1
+    elif dir == 3: dx = 1
+    else: return 0
+  if abs(dx) < 0.0001 and abs(dy) < 0.0001: return 0
+  if foldV:
+    # A one-row strip has no vertical range. The wheel moves it sideways.
+    nudgeAdj(gtk_scrolled_window_get_hadjustment(sw), dx + dy)
+  else:
+    nudgeAdj(gtk_scrolled_window_get_hadjustment(sw), dx)
+    nudgeAdj(gtk_scrolled_window_get_vadjustment(sw), dy)
+  1
+
+proc onLayoutScroll(widget, ev, data: pointer): cint {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TWinControl): return 0
+  let fold = c of TScrollBox and TScrollBox(c).strip
+  scrollBy(TWinControl(c).handle, ev, fold)
+
 proc createScroll(self: TControl) =
   let sw = gtk_scrolled_window_new(nil, nil)
-  gtk_scrolled_window_set_policy(sw, GtkPolicyAuto, GtkPolicyAuto)
   gtk_scrolled_window_set_shadow_type(sw, GtkShadowIn)
+  let box = TScrollBox(self)
+  if box.layoutKind == lkRow:
+    # lkRow has to be chosen before this runs. GtkLayout inside this scrolled
+    # window paints a few pixels of each button and then the background.
+    # A horizontal box paints the whole caption; the rest of the row scrolls.
+    box.strip = true
+    gtk_scrolled_window_set_policy(sw, GtkPolicyAuto, GtkPolicyNever)
+    # An overlay bar draws on top of the captions. Keep it in its own band.
+    gtk_scrolled_window_set_overlay_scrolling(sw, 0)
+    let hb = gtk_box_new(GtkOrientHorizontal, 4)
+    gtk_widget_set_margin_start(hb, 4)
+    gtk_widget_set_margin_end(hb, 4)
+    gtk_widget_set_margin_top(hb, 2)
+    gtk_widget_set_margin_bottom(hb, 2)
+    gtk_widget_add_events(sw, GdkScrollMask.cint)
+    connect(sw, "scroll-event", cast[pointer](onLayoutScroll), self.liveId)
+    gtk_container_add(sw, hb)
+    self.handle = sw
+    box.client = hb
+    return
+  if box.flow:
+    # `flow` has to be set before this runs. A horizontal scrollbar would
+    # adopt the one-row width of the buttons and the flow box would never wrap.
+    gtk_scrolled_window_set_policy(sw, GtkPolicyNever, GtkPolicyAuto)
+    let flowb = gtk_flow_box_new()
+    gtk_flow_box_set_selection_mode(flowb, 0)
+    gtk_flow_box_set_homogeneous(flowb, 0)
+    gtk_flow_box_set_column_spacing(flowb, 4)
+    gtk_flow_box_set_row_spacing(flowb, 4)
+    # The default maximum is 7, so a wide bar would show seven stretched
+    # buttons and wrap the rest early.
+    gtk_flow_box_set_max_children_per_line(flowb, 64)
+    gtk_widget_set_hexpand(flowb, 1)
+    # vexpand would make the box fill the viewport and clip the wrapped
+    # rows instead of scrolling them.
+    gtk_widget_set_margin_start(flowb, 4)
+    gtk_widget_set_margin_end(flowb, 4)
+    gtk_widget_set_margin_top(flowb, 4)
+    gtk_widget_set_margin_bottom(flowb, 4)
+    gtk_container_add(sw, flowb)
+    self.handle = sw
+    box.client = flowb
+    return
+  gtk_scrolled_window_set_policy(sw, GtkPolicyAuto, GtkPolicyAuto)
   let lay = gtk_layout_new(nil, nil)
   gtk_widget_set_hexpand(lay, 1)
   gtk_widget_set_vexpand(lay, 1)
   gtk_layout_set_size(lay, 400, 300)
+  gtk_widget_add_events(lay, GdkScrollMask.cint)
+  connect(lay, "scroll-event", cast[pointer](onLayoutScroll), self.liveId)
   gtk_container_add(sw, lay)
   self.handle = sw
-  TWinControl(self).client = lay
+  box.client = lay
 
 proc new*(_: typedesc[TScrollBox], owner: TComponent = nil): TScrollBox =
   result = TScrollBox()
@@ -1022,9 +1205,15 @@ proc pushPage(self: TControl) =
   if pc.handle != nil and pc.fActive >= 0:
     gtk_notebook_set_current_page(pc.handle, pc.fActive.cint)
 
+proc showTabs*(self: TPageControl): bool = self.fShowTabs
+proc `showTabs=`*(self: TPageControl, v: bool) =
+  self.fShowTabs = v
+  if self.handle != nil: gtk_notebook_set_show_tabs(self.handle, if v: 1 else: 0)
+
 proc createPage(self: TControl) =
   let pc = TPageControl(self)
   pc.handle = gtk_notebook_new()
+  gtk_notebook_set_show_tabs(pc.handle, if pc.fShowTabs: 1 else: 0)
   connect(pc.handle, "switch-page", cast[pointer](onPageSwitch), pc.liveId)
   pushPage(pc)
 
@@ -1034,6 +1223,7 @@ proc new*(_: typedesc[TPageControl], owner: TComponent = nil): TPageControl =
   result.fWidth = 260
   result.fHeight = 160
   result.fActive = 0
+  result.fShowTabs = true
   result.createImpl = createPage
   result.pushState = pushPage
 
@@ -1043,6 +1233,9 @@ proc selectedNode*(self: TTreeView): TTreeNode = self.selected
 
 proc storeSet(store: pointer, it: ptr GtkTreeIter, col: int, s: string, id: int) =
   var vs, vi: GValue
+  # g_value_init requires a zeroed GValue. A leftover gtype makes GLib warn.
+  zeroMem(addr vs, sizeof(vs))
+  zeroMem(addr vi, sizeof(vi))
   g_value_init(addr vs, GTypeString)
   g_value_set_string(addr vs, s.cstring)
   gtk_tree_store_set_value(store, it, 0, addr vs)
@@ -1097,7 +1290,9 @@ proc onTreeSel(sel: pointer, data: pointer) {.cdecl.} =
     tv.selected = nil
     return
   var v: GValue
-  g_value_init(addr v, GTypeInt)
+  # gtk_tree_model_get_value initializes the GValue. Doing it first warns
+  # "already been initialized as gint" on every tree selection.
+  zeroMem(addr v, sizeof(v))
   gtk_tree_model_get_value(tv.store, addr it, 1, addr v)
   let id = int(g_value_get_int(addr v))
   g_value_unset(addr v)
@@ -1156,6 +1351,19 @@ proc `enabled=`*(self: TMenuItem, v: bool) =
   self.fEnabled = v
   if self.gtkItem != nil:
     gtk_widget_set_sensitive(self.gtkItem, if v: 1 else: 0)
+proc checked*(self: TMenuItem): bool = self.fChecked
+proc `checked=`*(self: TMenuItem, v: bool) =
+  # Setting Checked makes a normal item into a check item. Clearing it
+  # leaves the box in place, so a View toggle can be turned back on.
+  let promote = v and not self.fCheckable
+  self.fChecked = v
+  if promote: self.fCheckable = true
+  if self.gtkItem == nil: return
+  if promote:
+    let root = ownerRoot(self)
+    if root of TForm: TForm(root).rebuildMenu()
+  elif self.fCheckable:
+    gtk_check_menu_item_set_active(self.gtkItem, if v: 1 else: 0)
 proc menuItems*(self: TMenuItem): seq[TMenuItem] = self.fItems
 proc menuItems*(self: TMainMenu): seq[TMenuItem] = self.fItems
 proc menuItems*(self: TPopupMenu): seq[TMenuItem] = self.fItems
@@ -1229,10 +1437,14 @@ proc parseShortcut(s: string): tuple[key: cuint, mods: cint] =
 proc buildGtkItem(item: TMenuItem, accel: pointer): pointer =
   if item.fCaption == "-":
     return gtk_separator_menu_item_new()
-  let gi = gtk_menu_item_new_with_label(gtkMnemonic(item.fCaption).cstring)
+  let text = gtkMnemonic(item.fCaption)
+  let gi = if item.fCheckable: gtk_check_menu_item_new_with_mnemonic(text.cstring)
+           else: gtk_menu_item_new_with_label(text.cstring)
   gtk_menu_item_set_use_underline(gi, 1)
   gtk_widget_set_sensitive(gi, if item.fEnabled: 1 else: 0)
   item.gtkItem = gi
+  if item.fCheckable:
+    gtk_check_menu_item_set_active(gi, if item.fChecked: 1 else: 0)
   connect(gi, "activate", cast[pointer](onMenuActivate), item.liveId)
   if item.fShortCut.len > 0 and accel != nil:
     let sc = parseShortcut(item.fShortCut)
@@ -1248,8 +1460,11 @@ proc buildGtkItem(item: TMenuItem, accel: pointer): pointer =
 proc rebuildMenu(self: TForm) =
   if self.designing or self.vbox == nil or headless: return
   if self.menuBar != nil:
-    gtk_container_remove(self.vbox, self.menuBar)
+    let bar = self.menuBar
+    let parent = gtk_widget_get_parent(bar)
     self.menuBar = nil
+    if parent != nil:
+      gtk_container_remove(parent, bar)
   if self.fMenu == nil or self.fMenu.fItems.len == 0: return
   if self.accel == nil and self.handle != nil and self.fParent == nil:
     self.accel = gtk_accel_group_new()
@@ -1257,7 +1472,7 @@ proc rebuildMenu(self: TForm) =
   self.menuBar = gtk_menu_bar_new()
   for it in self.fMenu.fItems:
     gtk_menu_shell_append(self.menuBar, buildGtkItem(it, self.accel))
-  gtk_box_pack_start(self.vbox, self.menuBar, 0, 0, 0)
+  gtk_box_pack_start(self.vbox, self.menuBar, 0, 1, 0)
   gtk_box_reorder_child(self.vbox, self.menuBar, 0)
   gtk_widget_show_all(self.menuBar)
 
@@ -1458,9 +1673,17 @@ proc createDesignForm(f: TForm) =
   gtk_box_pack_start(vbox, title, 0, 0, 0)
   gtk_box_pack_start(vbox, lay, 1, 1, 0)
   let frameCss = gtk_css_provider_new()
-  cssLoad(frameCss, "* { background-color: #d0d0d0; }")
+  cssLoad(frameCss, "* { background-color: #d4d4d4; }")
   gtk_style_context_add_provider(gtk_widget_get_style_context(vbox), frameCss, CssPrioApp)
-  f.handle = vbox
+  let clientCss = gtk_css_provider_new()
+  cssLoad(clientCss, "* { background-color: #ececec; }")
+  gtk_style_context_add_provider(gtk_widget_get_style_context(lay), clientCss, CssPrioApp)
+  # GtkLayout only places windowed children. A bare box has no window, so the
+  # whole design form (and everything in it) never appears.
+  let frame = gtk_event_box_new()
+  gtk_container_add(frame, vbox)
+  gtk_style_context_add_provider(gtk_widget_get_style_context(frame), frameCss, CssPrioApp)
+  f.handle = frame
   f.client = lay
   f.vbox = vbox
   f.extra = lab
@@ -1468,6 +1691,9 @@ proc createDesignForm(f: TForm) =
   f.borderLeft = 2
   f.borderRight = 2
   f.borderBottom = 2
+  # placeWidget shows this frame later. The widgets inside it are not NCL
+  # controls, so they have to be mapped here or the design form stays blank.
+  gtk_widget_show_all(frame)
 
 proc createRuntimeForm(f: TForm) =
   let win = gtk_window_new(0)
@@ -1568,17 +1794,126 @@ proc focus*(self: TSourceEditor) =
   if self.inner != nil: gtk_widget_grab_focus(self.inner)
   elif self.handle != nil: gtk_widget_grab_focus(self.handle)
 
+proc editorClipboard(self: TSourceEditor): pointer =
+  if self.inner == nil: return nil
+  gtk_widget_get_clipboard(self.inner, gdk_atom_intern("CLIPBOARD", 0))
+
+proc editCopy*(self: TSourceEditor) =
+  let clip = self.editorClipboard()
+  if self.buffer == nil or clip == nil: return
+  gtk_text_buffer_copy_clipboard(self.buffer, clip)
+
+proc editCut*(self: TSourceEditor) =
+  let clip = self.editorClipboard()
+  if self.buffer == nil or clip == nil: return
+  gtk_text_buffer_cut_clipboard(self.buffer, clip, 1)
+
+proc editPaste*(self: TSourceEditor) =
+  let clip = self.editorClipboard()
+  if self.buffer == nil or clip == nil: return
+  gtk_text_buffer_paste_clipboard(self.buffer, clip, nil, 1)
+
 proc focus*(self: TEdit) =
   if self.handle != nil: gtk_widget_grab_focus(self.handle)
 
-proc gotoLine*(self: TSourceEditor, line: int) =
+proc gotoLine*(self: TSourceEditor, line: int, column = 1) =
   if self.buffer == nil: return
   var it: array[32, int64]
-  gtk_text_buffer_get_iter_at_line(self.buffer, addr it[0], cint(max(0, line - 1)))
+  gtk_text_buffer_get_iter_at_line_offset(self.buffer, addr it[0],
+    cint(max(0, line - 1)), cint(max(0, column - 1)))
   gtk_text_buffer_place_cursor(self.buffer, addr it[0])
   if self.inner != nil:
     gtk_text_view_scroll_to_iter(self.inner, addr it[0], 0.05, 1, 0.0, 0.25)
     gtk_widget_grab_focus(self.inner)
+
+proc caretLine*(self: TSourceEditor): int =
+  ## 1-based insert line. 0 when the editor has no buffer.
+  if self.buffer == nil: return 0
+  let mark = gtk_text_buffer_get_insert(self.buffer)
+  if mark == nil: return 0
+  var it: array[32, int64]
+  gtk_text_buffer_get_iter_at_mark(self.buffer, addr it[0], mark)
+  int(gtk_text_iter_get_line(addr it[0])) + 1
+
+proc `scopeRails=`*(self: TSourceEditor, v: seq[TScopeRail]) =
+  self.rails = v
+  if self.gutter != nil: gtk_widget_queue_draw(self.gutter)
+
+proc gutterLineY(ed: TSourceEditor, line1: int): float =
+  ## Window y of the vertical center of a 1-based source line.
+  if ed.inner == nil or ed.buffer == nil: return -10000
+  var count = int(gtk_text_buffer_get_line_count(ed.buffer))
+  if count < 1: count = 1
+  var line0 = line1 - 1
+  if line0 < 0: line0 = 0
+  if line0 >= count: line0 = count - 1
+  var it: array[32, int64]
+  gtk_text_buffer_get_iter_at_line(ed.buffer, addr it[0], cint(line0))
+  var y, h: cint
+  gtk_text_view_get_line_yrange(ed.inner, addr it[0], addr y, addr h)
+  var wx, wy: cint
+  let mid = y + max(h, 1) div 2
+  gtk_text_view_buffer_to_window_coords(ed.inner, GtkTextWindowText, 0, mid, addr wx, addr wy)
+  float(wy)
+
+proc onGutterScroll(adj: pointer, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TSourceEditor): return
+  let g = TSourceEditor(c).gutter
+  if g != nil: gtk_widget_queue_draw(g)
+
+proc onEditorMark(buf, iter, mark, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TSourceEditor): return
+  let ed = TSourceEditor(c)
+  if mark != gtk_text_buffer_get_insert(buf): return
+  if ed.gutter != nil: gtk_widget_queue_draw(ed.gutter)
+  if ed.mute or ed.onCaret == nil: return
+  let line = int(gtk_text_iter_get_line(iter)) + 1
+  guard proc() = ed.onCaret(line)
+
+proc onGutterDraw(widget, cr, data: pointer): cint {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TSourceEditor): return 0
+  let ed = TSourceEditor(c)
+  let w = float(max(2, gtk_widget_get_allocated_width(widget)))
+  let h = float(max(2, gtk_widget_get_allocated_height(widget)))
+  cairo_set_source_rgba(cr, 0.965, 0.965, 0.965, 1)
+  cairo_rectangle(cr, 0, 0, w, h)
+  cairo_fill(cr)
+  let caret = ed.caretLine()
+  var hot = -1
+  for rail in ed.rails:
+    if rail.openLine <= caret and caret <= rail.closeLine and rail.depth > hot:
+      hot = rail.depth
+  cairo_set_line_width(cr, 1)
+  for rail in ed.rails:
+    if rail.depth < 0 or rail.depth >= 6: continue
+    let y0 = gutterLineY(ed, rail.openLine)
+    let y1 = gutterLineY(ed, rail.closeLine)
+    if y1 < -8 and y0 < -8: continue
+    if y0 > h + 8 and y1 > h + 8: continue
+    let x = float(int(6 + rail.depth * 8)) + 0.5
+    let active = hot == rail.depth and rail.openLine <= caret and caret <= rail.closeLine
+    if active: cairo_set_source_rgba(cr, 0.114, 0.306, 0.537, 1)
+    else: cairo_set_source_rgba(cr, 0.72, 0.71, 0.68, 1)
+    let top = min(y0, y1)
+    let bot = max(y0, y1)
+    if abs(y0 - y1) < 1:
+      cairo_move_to(cr, x, y0)
+      cairo_line_to(cr, x + 5, y0)
+      cairo_stroke(cr)
+    else:
+      cairo_move_to(cr, x, top)
+      cairo_line_to(cr, x, bot)
+      cairo_stroke(cr)
+      cairo_move_to(cr, x, top)
+      cairo_line_to(cr, x + 5, top)
+      cairo_stroke(cr)
+      cairo_move_to(cr, x, bot)
+      cairo_line_to(cr, x + 5, bot)
+      cairo_stroke(cr)
+  0
 
 proc findText*(self: TSourceEditor, needle: string, startAt: int): int =
   if needle.len == 0: return 0
@@ -1611,11 +1946,26 @@ proc createEditor(self: TControl) =
   gtk_text_view_set_wrap_mode(view, 0)
   let sw = gtk_scrolled_window_new(nil, nil)
   gtk_scrolled_window_set_policy(sw, GtkPolicyAuto, GtkPolicyAuto)
+  gtk_scrolled_window_set_shadow_type(sw, 0)
   gtk_container_add(sw, view)
-  ed.handle = sw
+  gtk_widget_set_hexpand(sw, 1)
+  gtk_widget_set_vexpand(sw, 1)
+  let gutter = gtk_drawing_area_new()
+  gtk_widget_set_size_request(gutter, 54, 1)
+  gtk_widget_set_vexpand(gutter, 1)
+  let box = gtk_box_new(0, 0)
+  gtk_box_pack_start(box, gutter, 0, 1, 0)
+  gtk_box_pack_start(box, sw, 1, 1, 0)
+  ed.handle = box
   ed.inner = view
   ed.buffer = buf
+  ed.gutter = gutter
   connect(buf, "changed", cast[pointer](onMemoChanged), ed.liveId)
+  connect(buf, "mark-set", cast[pointer](onEditorMark), ed.liveId)
+  connect(gutter, "draw", cast[pointer](onGutterDraw), ed.liveId)
+  let vadj = gtk_scrolled_window_get_vadjustment(sw)
+  if vadj != nil:
+    connect(vadj, "value-changed", cast[pointer](onGutterScroll), ed.liveId)
 
 proc new*(_: typedesc[TSourceEditor], owner: TComponent = nil): TSourceEditor =
   result = TSourceEditor()
@@ -1633,12 +1983,14 @@ proc freeComponent*(self: TComponent) =
   if self of TControl:
     let c = TControl(self)
     if c.fParent != nil: c.parent = nil
-    if c.handle != nil and not headless:
+    if not headless and (c.socket != nil or c.handle != nil):
+      let laid = if c.socket != nil: c.socket else: c.handle
       if c.held:
-        g_object_unref(c.handle)
+        g_object_unref(laid)
         c.held = false
       else:
-        gtk_widget_destroy(c.handle)
+        gtk_widget_destroy(laid)
+      c.socket = nil
       c.handle = nil
   if self.owner != nil:
     var kept: seq[TComponent]
@@ -1797,6 +2149,8 @@ proc registerWidgets() =
     proc(c: TComponent, v: string) = TMenuItem(c).shortCut = v)
   propBool("TMenuItem", "Enabled", proc(c: TComponent): bool = TMenuItem(c).fEnabled,
     proc(c: TComponent, v: bool) = TMenuItem(c).enabled = v)
+  propBool("TMenuItem", "Checked", proc(c: TComponent): bool = TMenuItem(c).fChecked,
+    proc(c: TComponent, v: bool) = TMenuItem(c).checked = v)
   propEvent("TMenuItem", "OnClick", "notify")
   setDefaultEvent("TMenuItem", "OnClick")
 

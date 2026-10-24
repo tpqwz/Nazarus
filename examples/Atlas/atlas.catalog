@@ -1,0 +1,15 @@
+{"name":"Valletta","region":"Mediterranean","kind":"Harbor","visited":true,"interest":82,"notes":"A fortified harbor city, with stepped streets running down to the Grand Harbour."}
+{"name":"Matera","region":"Mediterranean","kind":"Stone","visited":false,"interest":90,"notes":"Cave rooms cut into a ravine, stacked one above another in pale stone."}
+{"name":"Rovinj","region":"Mediterranean","kind":"Coast","visited":true,"interest":74,"notes":"A peninsula of tight lanes, with the church holding the highest roof."}
+{"name":"Reykjavík","region":"North Atlantic","kind":"City","visited":false,"interest":68,"notes":"Low houses and a bright harbor, under weather that turns before a cup of coffee cools."}
+{"name":"Tórshavn","region":"North Atlantic","kind":"Harbor","visited":false,"interest":61,"notes":"Turf roofs and a small port, where the Atlantic is the street at the end of town."}
+{"name":"St. John's","region":"North Atlantic","kind":"Harbor","visited":true,"interest":55,"notes":"Colored houses on a steep hill, facing a narrow mouth into the harbor."}
+{"name":"Edinburgh","region":"Highlands","kind":"City","visited":true,"interest":84,"notes":"A ridge with a castle at one end, a palace at the other, and closes in between."}
+{"name":"Bergen","region":"Highlands","kind":"Harbor","visited":false,"interest":77,"notes":"Wooden wharves along the water, and a wall of mountain behind the fish market."}
+{"name":"Innsbruck","region":"Highlands","kind":"Valley","visited":true,"interest":70,"notes":"A city on a valley floor, with cable and rock closing every horizon."}
+{"name":"Marrakech","region":"Desert roads","kind":"City","visited":false,"interest":80,"notes":"Red walls, and a square that is louder after dark than it is at noon."}
+{"name":"Ghardaïa","region":"Desert roads","kind":"Valley","visited":false,"interest":73,"notes":"White and blue houses of the M'zab, set above a valley of date palms."}
+{"name":"Aït Benhaddou","region":"Desert roads","kind":"Ruin","visited":false,"interest":88,"notes":"A clay ksar along a ridge, with a dry riverbed at its feet."}
+{"name":"Hobart","region":"Pacific","kind":"Harbor","visited":false,"interest":64,"notes":"A southern harbor under a mountain, in a cold and very clear light."}
+{"name":"Wellington","region":"Pacific","kind":"City","visited":true,"interest":58,"notes":"Houses climbing away from a windy strait, each street a little steeper."}
+{"name":"Nagasaki","region":"Pacific","kind":"Harbor","visited":false,"interest":79,"notes":"A long inlet held in by hills, opening toward the East China Sea."}

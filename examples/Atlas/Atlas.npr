@@ -1,0 +1,7 @@
+{
+  "name": "Atlas",
+  "main": "atlas",
+  "units": [
+    "atlas"
+  ]
+}

@@ -1,7 +1,7 @@
 ## .npr projects. A project is a directory of Nim form units plus a generated
 ## program file that loads them.
 
-import std/[json, os]
+import std/[json, os, strutils]
 
 type
   TProject* = ref object
@@ -70,6 +70,84 @@ proc validUnitName*(name: string): bool =
   for ch in name:
     if ch notin {'A' .. 'Z', 'a' .. 'z', '0' .. '9', '_'}: return false
   result = true
+
+type
+  TCompilerSite* = object
+    ## A location named by one compiler line. `file` is one of the paths
+    ## that were asked about. An empty `file` means the line names nothing.
+    file*: string
+    line*: int
+    col*: int
+
+proc pathChar(c: char): bool =
+  c in {'A' .. 'Z', 'a' .. 'z', '0' .. '9', '_', '.', '/', '\\', '-', '+', '@'}
+
+proc pathBefore(text: string, at: int): string =
+  var a = at
+  while a > 0 and pathChar(text[a - 1]): dec a
+  if a < at: text[a ..< at] else: ""
+
+proc readIntAt(text: string, i: var int): int =
+  ## Reads a non-negative integer at `i` and advances past it. Returns -1
+  ## when the cursor is not on a digit.
+  let start = i
+  while i < text.len and text[i] in {'0' .. '9'}: inc i
+  if i == start: return -1
+  try: parseInt(text[start ..< i])
+  except CatchableError: -1
+
+proc skipSpaces(text: string, i: var int) =
+  while i < text.len and text[i] == ' ': inc i
+
+proc collectSites(text: string): seq[TCompilerSite] =
+  ## Nim writes `path(line, col)`. A C compiler writes `path:line:col:`.
+  var i = 0
+  while i < text.len:
+    if text[i] == '(':
+      var j = i + 1
+      let line = readIntAt(text, j)
+      if line >= 1 and j < text.len and text[j] == ',':
+        inc j
+        skipSpaces(text, j)
+        let col = readIntAt(text, j)
+        if col >= 0 and j < text.len and text[j] == ')':
+          let path = pathBefore(text, i)
+          if path.len > 0:
+            result.add(TCompilerSite(file: path, line: line, col: max(1, col)))
+          i = j
+    elif text[i] == ':':
+      var j = i + 1
+      let line = readIntAt(text, j)
+      if line >= 1 and j < text.len and text[j] == ':':
+        let path = pathBefore(text, i)
+        if '.' in path or '/' in path:
+          var col = 1
+          var k = j + 1
+          let raw = readIntAt(text, k)
+          if raw >= 1 and k < text.len and text[k] == ':': col = raw
+          result.add(TCompilerSite(file: path, line: line, col: col))
+        i = j
+    inc i
+
+proc siteScore(known, written: string): int =
+  if written == known or written.endsWith("/" & known): return known.len + 1000
+  if known.endsWith("/" & written): return written.len + 500
+  let name = known.extractFilename
+  if name.len > 0 and (written == name or written.endsWith("/" & name)):
+    return name.len
+  0
+
+proc compilerSite*(text: string, files: openArray[string]): TCompilerSite =
+  ## Picks the project file a compiler line is talking about. The longest
+  ## real project path wins, so `unit1.nim` does not beat a full path and a
+  ## Nim cache file such as `unit1.nim.c` does not count as `unit1.nim`.
+  var best = 0
+  for site in collectSites(text):
+    for known in files:
+      let score = siteScore(known, site.file)
+      if score > best:
+        best = score
+        result = TCompilerSite(file: known, line: site.line, col: site.col)
 
 proc freshUnitName*(p: TProject): string =
   var i = 1

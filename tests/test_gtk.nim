@@ -26,7 +26,7 @@ memo.left = 16
 memo.top = 96
 memo.width = 180
 memo.height = 70
-memo.text = "one\ntwo"
+memo.text = "café lantern"
 
 let check = TCheckBox.new(form)
 check.parent = form
@@ -54,6 +54,12 @@ bar.position = 40
 form.onCreate = proc(sender: TObject) =
   if edit.text != "hello" or not check.checked or radio.itemIndex != 0:
     echo "GTK smoke saw the wrong widget state"
+    quit(2)
+  # "café" is four characters. The selection starts at "lantern".
+  memo.selectRange(5, 7)
+  let sel = memo.selection()
+  if sel.start != 5 or sel.length != 7:
+    echo "memo selection " & $sel.start & " " & $sel.length
     quit(2)
 
 form.run()

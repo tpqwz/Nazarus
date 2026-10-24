@@ -2,8 +2,13 @@ nimcache/
 hcr_cache/
 *.exe
 examples/hello/hello
-examples/Greeter/Greeter
-examples/Greeter/nimcache/
+examples/Atlas/Atlas
+examples/Atlas/nimcache/
+examples/Search/search
+examples/Search/nimcache/
 tests/test_ncl
 tests/test_gtk
 tests/test_build
+tests/test_search
+tests/test_atlas
+tests/test_nimsyn

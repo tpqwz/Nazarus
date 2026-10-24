@@ -93,6 +93,9 @@ type
     fCaption: string
     fParent: TWinControl
     handle: pointer
+    ## Windowed stand-in put into a GtkLayout when `handle` itself has no window.
+    ## GtkLayout does not paint no-window children (labels, frames, boxes).
+    socket: pointer
     css: pointer
     placed: bool
     held: bool
@@ -116,6 +119,7 @@ type
     designOverlay: pointer
     lastClientW, lastClientH: int
     lastAllocW, lastAllocH: int
+    scrollMinW, scrollMinH: int
     borderLeft, borderTop, borderRight, borderBottom: int
     accel: pointer
 
@@ -142,6 +146,7 @@ type
     fText: string
     fReadOnly: bool
     fWordWrap: bool
+    fMonospace: bool
   TCheckBox* = ref object of TWinControl
     fChecked: bool
   TRadioButton* = ref object of TWinControl
@@ -177,6 +182,11 @@ type
     siblingOrigin: int
     sibling: TControl
   TScrollBox* = ref object of TWinControl
+    ## When set before the scroll box is realized, children wrap in a flow box.
+    flow*: bool
+    ## Realized as a horizontal box. Set from lkRow before the widget exists.
+    ## A GtkLayout in this scrolled window paints only a sliver of each button.
+    strip: bool
   TTrackBar* = ref object of TWinControl
     fMin, fMax, fPosition: int
     fOrientation: TOrientation
@@ -189,6 +199,7 @@ type
   TPageControl* = ref object of TWinControl
     pages: seq[TTabSheet]
     fActive: int
+    fShowTabs: bool
     onChangePage*: TNotifyEvent
   TTreeNode* = ref object
     text: string
@@ -210,6 +221,9 @@ type
     fCaption: string
     fShortCut: string
     fEnabled: bool
+    fChecked: bool
+    # A check item keeps its box when it is unchecked. A normal item never has one.
+    fCheckable: bool
     fItems: seq[TMenuItem]
     onClick*: TNotifyEvent
     gtkItem: pointer
@@ -224,9 +238,14 @@ type
     fFileName: string
     fDefaultExt: string
   TSaveDialog* = ref object of TOpenDialog
+  TScopeRail* = object
+    openLine*, closeLine*, depth*: int
   TSourceEditor* = ref object of TWinControl
     buffer: pointer
     mute: bool
+    gutter: pointer
+    rails: seq[TScopeRail]
+    onCaret*: proc(line: int) {.closure.}
   TApplication* = ref object
     title*: string
     mainForm*: TForm
@@ -427,6 +446,14 @@ proc parent*(self: TControl): TWinControl = self.fParent
 proc anchors*(self: TControl): set[TAnchorKind] = self.fAnchors
 
 proc clientExtent(self: TWinControl): tuple[w, h: int] =
+  # A scroll box's layout widget grows to its content. Wrapping and aligning
+  # have to use the widget's own allocation (the viewport), or one pass makes
+  # the content wider and the next pass treats that width as the client.
+  if not headless and self of TScrollBox and self.handle != nil:
+    let aw = int(gtk_widget_get_allocated_width(self.handle))
+    let ah = int(gtk_widget_get_allocated_height(self.handle))
+    if aw > 20 and ah > 20:
+      return (aw, ah)
   if self.client != nil and not headless:
     let w = gtk_widget_get_allocated_width(self.client)
     let h = gtk_widget_get_allocated_height(self.client)
@@ -438,22 +465,100 @@ proc clientExtent(self: TWinControl): tuple[w, h: int] =
 proc clientWidth*(self: TWinControl): int = self.clientExtent.w
 proc clientHeight*(self: TWinControl): int = self.clientExtent.h
 
+proc layoutChild(self: TControl): pointer =
+  if self.socket != nil: self.socket else: self.handle
+
+proc inFlow(self: TControl): bool =
+  self.fParent != nil and self.fParent of TScrollBox and TScrollBox(self.fParent).flow
+
+proc inStrip(self: TControl): bool =
+  self.fParent != nil and self.fParent of TScrollBox and TScrollBox(self.fParent).strip
+
+proc setMinContent*(self: TScrollBox, w, h: int) =
+  ## Keep a wrapping palette from collapsing to a single row of buttons.
+  if headless or self.handle == nil: return
+  if w > 0: gtk_scrolled_window_set_min_content_width(self.handle, w.cint)
+  if h > 0: gtk_scrolled_window_set_min_content_height(self.handle, h.cint)
+
+proc prepareLayoutChild(self: TControl): pointer =
+  ## GtkLayout only shows children that own a GdkWindow. Wrap the rest.
+  ## The wrapper stays transparent so a label does not paint a solid plate.
+  ## A flow box or a horizontal strip paints ordinary buttons, so those stay unwrapped.
+  if self.inFlow() or self.inStrip(): return self.handle
+  if self.socket != nil: return self.socket
+  if self.handle == nil: return nil
+  if gtk_widget_get_has_window(self.handle) != 0: return self.handle
+  let eb = gtk_event_box_new()
+  gtk_container_add(eb, self.handle)
+  gtk_widget_show(self.handle)
+  let css = gtk_css_provider_new()
+  cssLoad(css, "* { background-color: transparent; background-image: none; }")
+  gtk_style_context_add_provider(gtk_widget_get_style_context(eb), css, CssPrioApp)
+  self.socket = eb
+  eb
+
 proc placeWidget(self: TControl) =
   if headless or self.handle == nil or self.fParent == nil: return
   let parent = self.fParent
   if parent.client == nil: return
   if self of TTabSheet: return
+  let hadSocket = self.socket != nil
+  let child = self.prepareLayoutChild()
+  if child == nil: return
+  if self.inFlow():
+    if not self.placed:
+      gtk_flow_box_insert(parent.client, child, -1)
+      self.placed = true
+      if self.held:
+        g_object_unref(child)
+        self.held = false
+    gtk_widget_set_halign(child, GtkAlignStart)
+    gtk_widget_set_size_request(child, max(1, self.fWidth).cint, max(1, self.fHeight).cint)
+    if self.fVisible: gtk_widget_show_all(child)
+    else: gtk_widget_hide(child)
+    return
+  if self.inStrip():
+    if not self.placed:
+      # expand/fill stay off so a short caption does not stretch across the bar.
+      gtk_box_pack_start(parent.client, child, 0, 0, 0)
+      self.placed = true
+      if self.held:
+        g_object_unref(child)
+        self.held = false
+    gtk_widget_set_valign(child, GtkAlignCenter)
+    gtk_widget_set_size_request(child, max(1, self.fWidth).cint, max(1, self.fHeight).cint)
+    if self.fVisible: gtk_widget_show_all(child)
+    else: gtk_widget_hide(child)
+    return
+  let freshWrap = self.socket != nil and not hadSocket and self.placed
+  if freshWrap:
+    # Reparenting into the socket already pulled the bare widget out of the layout.
+    self.placed = false
   if not self.placed:
-    gtk_layout_put(parent.client, self.handle, self.fLeft.cint, self.fTop.cint)
+    gtk_layout_put(parent.client, child, self.fLeft.cint, self.fTop.cint)
     self.placed = true
     if self.held:
-      g_object_unref(self.handle)
+      g_object_unref(child)
       self.held = false
   else:
-    gtk_layout_move(parent.client, self.handle, self.fLeft.cint, self.fTop.cint)
-  gtk_widget_set_size_request(self.handle, max(1, self.fWidth).cint, max(1, self.fHeight).cint)
-  if self.fVisible: gtk_widget_show(self.handle)
-  else: gtk_widget_hide(self.handle)
+    gtk_layout_move(parent.client, child, self.fLeft.cint, self.fTop.cint)
+  let rw = max(1, self.fWidth).cint
+  let rh = max(1, self.fHeight).cint
+  gtk_widget_set_size_request(child, rw, rh)
+  if self.fVisible:
+    gtk_widget_show_all(child)
+  else:
+    gtk_widget_hide(child)
+  # GtkLayout copies the child's minimum size into its allocation, and a
+  # queue_resize issued while the parent is already allocating is often
+  # dropped. Push the rectangle ourselves so a newly placed control cannot
+  # stay 1x1.
+  var box: GtkAllocation
+  box.x = self.fLeft.cint
+  box.y = self.fTop.cint
+  box.width = rw
+  box.height = rh
+  gtk_widget_size_allocate(child, addr box)
 
 proc layoutChildren(self: TWinControl)
 
@@ -485,32 +590,42 @@ proc applyAnchors(c: TControl, oldW, oldH, newW, newH: int) =
   elif akBottom in c.fAnchors and akTop in c.fAnchors: h += dh
   c.setBoundsInternal(x, y, max(8, w), max(8, h))
 
+proc designDocument(self: TWinControl, c: TControl): bool =
+  ## The form on the design scroll box keeps Left, Top, Width, and Height.
+  ## Align and anchors apply when the program runs, not while it is being drawn.
+  c of TForm and c.designing and self of TScrollBox
+
 proc doAlign(self: TWinControl, cw, ch: int) =
   var x = 0
   var y = 0
   var right = cw
   var bottom = ch
   for c in self.controls:
+    if self.designDocument(c): continue
     if not c.fVisible or c.fAlign != alTop: continue
     c.setBoundsInternal(x, y, max(0, right - x), c.fHeight)
     y += c.fHeight
   for c in self.controls:
+    if self.designDocument(c): continue
     if not c.fVisible or c.fAlign != alBottom: continue
     let bh = c.fHeight
     bottom -= bh
     if bottom < y: bottom = y
     c.setBoundsInternal(x, bottom, max(0, right - x), bh)
   for c in self.controls:
+    if self.designDocument(c): continue
     if not c.fVisible or c.fAlign != alLeft: continue
     c.setBoundsInternal(x, y, c.fWidth, max(0, bottom - y))
     x += c.fWidth
   for c in self.controls:
+    if self.designDocument(c): continue
     if not c.fVisible or c.fAlign != alRight: continue
     let bw = c.fWidth
     right -= bw
     if right < x: right = x
     c.setBoundsInternal(right, y, bw, max(0, bottom - y))
   for c in self.controls:
+    if self.designDocument(c): continue
     if not c.fVisible or c.fAlign != alClient: continue
     c.setBoundsInternal(x, y, max(0, right - x), max(0, bottom - y))
     x = right
@@ -523,6 +638,28 @@ proc doRow(self: TWinControl, cw, ch: int) =
     let y = max(0, (ch - c.fHeight) div 2)
     c.setBoundsInternal(x, y, c.fWidth, c.fHeight)
     x += c.fWidth + 4
+
+proc wrapViewport(self: TWinControl, cw: int): int =
+  ## Width a wrapping bar should break lines at. A scroll box's layout widget,
+  ## and sometimes the scrolled window itself, report the content width, which
+  ## keeps every palette button on one row past the edge of the window.
+  if not (self of TScrollBox):
+    return max(cw, 1)
+  result = 0
+  if not headless and self.handle != nil:
+    let top = gtk_widget_get_toplevel(self.handle)
+    if top != nil and top != self.handle:
+      let tw = int(gtk_widget_get_allocated_width(top))
+      if tw > 80: result = tw
+    let adj = gtk_scrolled_window_get_hadjustment(self.handle)
+    if adj != nil:
+      let page = int(gtk_adjustment_get_page_size(adj))
+      if page > 40 and (result == 0 or page < result):
+        result = page
+  if self.fWidth > 40 and (result == 0 or self.fWidth < result):
+    result = self.fWidth
+  if result <= 40:
+    result = max(cw, 1)
 
 proc doWrap(self: TWinControl, cw, ch: int) =
   var x = 4
@@ -541,33 +678,47 @@ proc doWrap(self: TWinControl, cw, ch: int) =
 proc updateScrollExtent(self: TWinControl) =
   if headless or self.client == nil: return
   if not (self of TScrollBox): return
-  var maxx = self.fWidth
-  var maxy = self.fHeight
+  # A flow box or a strip is not a GtkLayout. Its size request is the scrollable size.
+  if TScrollBox(self).flow or TScrollBox(self).strip: return
+  var maxx = max(self.fWidth, self.scrollMinW)
+  var maxy = max(self.fHeight, self.scrollMinH)
   for c in self.controls:
-    if c.fAlign != alNone: continue
+    if c.fAlign != alNone and not self.designDocument(c): continue
     maxx = max(maxx, c.fLeft + c.fWidth + 16)
     maxy = max(maxy, c.fTop + c.fHeight + 16)
   gtk_layout_set_size(self.client, cuint(max(maxx, 1)), cuint(max(maxy, 1)))
 
 proc raiseDesignOverlay(self: TWinControl) =
-  if headless or self.designOverlay == nil or self.client == nil: return
-  # Removing the last reference finalizes the widget. Hold one across the move.
-  discard g_object_ref(self.designOverlay)
-  gtk_container_remove(self.client, self.designOverlay)
-  gtk_layout_put(self.client, self.designOverlay, 0, 0)
-  g_object_unref(self.designOverlay)
-  let (cw, ch) = self.clientExtent()
-  let w = max(cw, 1600)
-  let h = max(ch, 1200)
-  gtk_widget_set_size_request(self.designOverlay, w.cint, h.cint)
-  gtk_widget_show(self.designOverlay)
+  # designOverlay is an input-only GdkWindow. Raising it keeps mouse capture
+  # above the controls without painting over them.
+  if headless or self.designOverlay == nil: return
+  let w = max(self.scrollMinW, 1600)
+  let h = max(self.scrollMinH, 1200)
+  gdk_window_move_resize(self.designOverlay, 0, 0, w.cint, h.cint)
+  gdk_window_raise(self.designOverlay)
 
 proc layoutChildren(self: TWinControl) =
   if self.layouting: return
+  if self of TScrollBox and (TScrollBox(self).flow or TScrollBox(self).strip):
+    # The flow box or the horizontal strip places these children. Nested controls still lay out.
+    self.layouting = true
+    self.layouting = false
+    for c in self.controls:
+      if c of TWinControl:
+        TWinControl(c).layoutChildren()
+    if afterLayout != nil: afterLayout(self)
+    return
   if self of TPageControl:
     self.layouting = true
+    # A notebook page is not given a GTK allocation from its NCL width. Size
+    # each page to the page control, or the design surface stays at the
+    # tab sheet's 200x120 default in the corner of the page.
+    let ext = self.clientExtent()
     for page in TPageControl(self).pages:
-      page.layoutChildren()
+      if ext.w > 20 and ext.h > 20:
+        page.setBoundsInternal(0, 0, ext.w, ext.h)
+      else:
+        page.layoutChildren()
     self.layouting = false
     if afterLayout != nil: afterLayout(self)
     return
@@ -580,6 +731,7 @@ proc layoutChildren(self: TWinControl) =
     self.doAlign(cw, ch)
     if self.lastClientW > 0 or self.lastClientH > 0:
       for c in self.controls:
+        if self.designDocument(c): continue
         if c.fVisible and c.fAlign == alNone:
           applyAnchors(c, self.lastClientW, self.lastClientH, cw, ch)
     self.lastClientW = cw
@@ -587,7 +739,7 @@ proc layoutChildren(self: TWinControl) =
   of lkRow:
     self.doRow(cw, ch)
   of lkWrap:
-    self.doWrap(cw, ch)
+    self.doWrap(self.wrapViewport(cw), ch)
   self.updateScrollExtent()
   self.raiseDesignOverlay()
   self.layouting = false
@@ -683,11 +835,12 @@ proc `parent=`*(self: TControl, p: TWinControl) =
     for c in old.controls:
       if c != self: kept.add(c)
     old.controls = kept
-    if self.placed and old.client != nil and self.handle != nil and not (self of TTabSheet):
+    let laid = self.layoutChild()
+    if self.placed and old.client != nil and laid != nil and not (self of TTabSheet):
       if not self.held:
-        discard g_object_ref(self.handle)
+        discard g_object_ref(laid)
         self.held = true
-      gtk_container_remove(old.client, self.handle)
+      gtk_container_remove(old.client, laid)
     self.placed = false
   self.fParent = p
   if p == nil:
@@ -747,8 +900,9 @@ proc `anchors=`*(self: TControl, v: set[TAnchorKind]) = self.fAnchors = v
 
 proc `visible=`*(self: TControl, v: bool) =
   self.fVisible = v
-  if self.handle != nil:
-    if v: gtk_widget_show(self.handle) else: gtk_widget_hide(self.handle)
+  let laid = self.layoutChild()
+  if laid != nil:
+    if v: gtk_widget_show_all(laid) else: gtk_widget_hide(laid)
   if self.fParent != nil and not self.fParent.layouting:
     self.fParent.layoutChildren()
 

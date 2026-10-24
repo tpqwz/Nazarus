@@ -8,6 +8,10 @@ proc fail(msg: string) =
   stderr.writeLine("FAIL " & msg)
   quit(1)
 
+let named = procNames("proc Button1Click*(self: TForm1; sender: TObject) =\n  discard\nproc extra(x: int) =\n")
+if named.len != 2 or named[0].name != "Button1Click" or named[0].line != 1 or named[1].name != "extra" or named[1].line != 3:
+  fail("proc list " & $named.len)
+
 let form = TForm.new()
 form.name = "Form1"
 form.caption = "Greeter"

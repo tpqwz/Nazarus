@@ -1,0 +1,26 @@
+Nazarus
+
+Nazarus is a small RAD workshop for Nim. You draw a form, the IDE writes
+the glue, and the Nim compiler builds the program. The component library
+is called NCL. Names that already feel familiar are still there: TForm,
+TButton, TEdit, TMemo.
+
+The designer keeps an 8 pixel grid. Dragging a control moves it. Dragging
+the handles on its edge resizes it. The same handles resize the form.
+With the arrow, a drag across empty space draws a selection rectangle.
+Shift-click adds or removes a control. Edit, Align lines the selected
+controls up with the one showing in the inspector.
+
+This window is itself an NCL program. It builds a full text index of the
+files beside it. A query lists a snippet for every hit, and choosing a
+row selects that spot in the original document.
+
+A quoted phrase has to occur in order. The words full text, written in
+quotes, find this paragraph and skip a page that merely contains both
+words somewhere apart. Separate words are a set: every word has to appear,
+and the snippet marks the first of them.
+
+The form file for a designed program is .nfm, the project file is .npr,
+and the unit keeps your event bodies between markers. This sample does
+not go through those markers. It is hand written, the same way examples
+hello is hand written, so the search code stays in one place.

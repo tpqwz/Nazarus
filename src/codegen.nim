@@ -1,5 +1,7 @@
 ## Two-way form unit writer. The designer owns fields, bindings, and the load
-## proc. Event bodies are kept. Every other top-level proc is copied through.
+## proc. Event bodies are kept. A DECL block above the events is kept in place,
+## so handlers can call the procs in it. Every other top-level proc is copied
+## through.
 
 import std/[strutils, tables, sets]
 
@@ -12,6 +14,8 @@ const
   MarkEvents1 = "# NAZARUS:EVENTS END"
   MarkBind0 = "# NAZARUS:BIND BEGIN"
   MarkBind1 = "# NAZARUS:BIND END"
+  MarkDecl0 = "# NAZARUS:DECL BEGIN"
+  MarkDecl1 = "# NAZARUS:DECL END"
   MarkUser0 = "# NAZARUS:USER BEGIN"
   MarkUser1 = "# NAZARUS:USER END"
 
@@ -29,6 +33,22 @@ proc handlerName*(compName, event: string): string =
   if suffix.startsWith("On") and suffix.len > 2 and suffix[2] in {'A' .. 'Z'}:
     suffix = suffix[2 .. ^1]
   compName & suffix
+
+proc procNames*(src: string): seq[tuple[name: string, line: int]] =
+  ## Every top-level `proc` in a unit, with its 1-based line.
+  var n = 1
+  for line in src.splitLines:
+    let s = line.strip
+    if s.startsWith("proc "):
+      var rest = s[5 .. ^1].strip
+      if rest.len > 0 and rest[0] == '*':
+        rest = rest[1 .. ^1].strip
+      var i = 0
+      while i < rest.len and rest[i] in {'A' .. 'Z', 'a' .. 'z', '_', '0' .. '9'}:
+        inc i
+      if i > 0:
+        result.add((name: rest[0 ..< i], line: n))
+    inc n
 
 proc eventField(event: string): string =
   if event.len == 0: ""
@@ -51,6 +71,21 @@ proc captureBetween(src, a, b: string): string =
   let j = src.find(b, i + a.len)
   if j < 0: return ""
   src[i + a.len ..< j]
+
+proc regionBody(src, a, b: string): string =
+  ## Text between two markers. The begin marker's own line break is not part of it,
+  ## so writing the marker back does not grow a blank line on every save.
+  result = captureBetween(src, a, b)
+  if result.startsWith("\r\n"): result = result[2 .. ^1]
+  elif result.startsWith("\n"): result = result[1 .. ^1]
+
+proc blankRegion(src, a, b: string): string =
+  ## Drop a marked block so the procs inside it are not also copied as orphans.
+  let i = src.find(a)
+  if i < 0: return src
+  let j = src.find(b, i + a.len)
+  if j < 0: return src
+  src[0 ..< i] & src[j + b.len .. ^1]
 
 type
   TKeptProc = object
@@ -153,8 +188,9 @@ proc bodyOrDiscard(kept: OrderedTable[string, TKeptProc], name: string): string 
 proc generateUnit*(form: TForm, previous: string): string =
   ## Rewrite the managed sections of a form unit. `previous` may be empty.
   let formType = formTypeName(form.name)
-  let kept = captureProcs(previous)
-  let user = captureBetween(previous, MarkUser0, MarkUser1)
+  let kept = captureProcs(blankRegion(previous, MarkDecl0, MarkDecl1))
+  let decl = regionBody(previous, MarkDecl0, MarkDecl1)
+  let user = regionBody(previous, MarkUser0, MarkUser1)
 
   var fields = ""
   for c in form.ownedComponents:
@@ -198,6 +234,11 @@ proc generateUnit*(form: TForm, previous: string): string =
   result.add("    " & MarkFields0 & "\n")
   result.add(fields)
   result.add("    " & MarkFields1 & "\n\n")
+  if decl.len > 0:
+    result.add(MarkDecl0 & "\n")
+    result.add(decl)
+    if not decl.endsWith("\n"): result.add("\n")
+    result.add(MarkDecl1 & "\n\n")
   result.add(MarkEvents0 & "\n")
   result.add(eventBlock)
   result.add(MarkEvents1 & "\n\n")

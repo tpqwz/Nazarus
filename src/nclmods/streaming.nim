@@ -118,7 +118,9 @@ proc parseRaw(s: string, i: var int): string =
   while i < s.len and s[i] notin {'\n', '\r'}: inc i
   s[start ..< i].strip
 
-proc parseNfm(s: string): NfmNode =
+proc parseNfmSequence(s: string): seq[NfmNode] =
+  ## One or more `object` blocks, in order. A form file has one. The designer
+  ## clipboard can hold several controls copied together.
   var i = 0
   proc atKeyword(word: string): bool =
     if i + word.len > s.len: return false
@@ -156,7 +158,18 @@ proc parseNfm(s: string): NfmNode =
       if pname.len == 0: break
       if i < s.len and s[i] == '=': inc i
       result.props.add((pname, parseRaw(s, i)))
-  parseObject()
+  while true:
+    skipWs(s, i)
+    if i >= s.len: break
+    if not atKeyword("object"):
+      raise newException(ValueError, "expected 'object' in the form file at " & $i)
+    result.add(parseObject())
+
+proc parseNfm(s: string): NfmNode =
+  let nodes = parseNfmSequence(s)
+  if nodes.len == 0:
+    raise newException(ValueError, "expected 'object' in the form file")
+  nodes[0]
 
 proc attachLogical(container, child: TComponent) =
   child.container = container
@@ -183,6 +196,9 @@ proc buildChild(node: NfmNode, root, container: TComponent) =
   if node.className.len == 0:
     raise newException(ValueError, "form object without a class")
   let obj = createComponent(node.className, root)
+  # A timer arms when Interval is applied. Mark it before that, or a paste
+  # onto a form that is being designed starts ticking inside the IDE.
+  if root.designing: obj.designing = true
   if node.name.len > 0: obj.name = node.name
   obj.container = container
   applyNode(node, obj)
