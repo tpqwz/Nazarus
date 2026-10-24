@@ -1,0 +1,21 @@
+object Form1: TForm
+  Width = 320
+  Height = 160
+  Caption = 'Greeter'
+  object Label1: TLabel
+    Left = 16
+    Top = 24
+    Caption = 'Name'
+  end
+  object Edit1: TEdit
+    Left = 72
+    Top = 20
+    Text = 'world'
+  end
+  object Button1: TButton
+    Left = 72
+    Top = 64
+    OnClick = Button1Click
+    Caption = 'Greet'
+  end
+end

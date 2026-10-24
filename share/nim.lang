@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language id="nim" name="Nim" version="2.0" _section="Source">
+  <metadata>
+    <property name="mimetypes">text/x-nim</property>
+    <property name="globs">*.nim;*.nims;*.nimble</property>
+    <property name="line-comment-start">#</property>
+  </metadata>
+
+  <styles>
+    <style id="comment" name="Comment" map-to="def:comment"/>
+    <style id="string" name="String" map-to="def:string"/>
+    <style id="keyword" name="Keyword" map-to="def:keyword"/>
+    <style id="boolean" name="Boolean" map-to="def:boolean"/>
+    <style id="number" name="Number" map-to="def:number"/>
+    <style id="type" name="Type" map-to="def:type"/>
+    <style id="pragma" name="Pragma" map-to="def:preprocessor"/>
+  </styles>
+
+  <definitions>
+    <context id="line-comment" style-ref="comment" end-at-line-end="true">
+      <start>#(?!\[)</start>
+    </context>
+
+    <context id="block-comment" style-ref="comment">
+      <start>#\[</start>
+      <end>]#</end>
+      <include>
+        <context ref="block-comment"/>
+      </include>
+    </context>
+
+    <context id="triple-string" style-ref="string">
+      <start>"""</start>
+      <end>"""</end>
+    </context>
+
+    <context id="raw-string" style-ref="string">
+      <start>r"</start>
+      <end>"</end>
+    </context>
+
+    <context id="string" style-ref="string" end-at-line-end="true">
+      <start>"</start>
+      <end>"</end>
+      <include>
+        <context id="string-escape" style-ref="number">
+          <match>\\.</match>
+        </context>
+      </include>
+    </context>
+
+    <context id="char-literal" style-ref="string" end-at-line-end="true">
+      <start>'</start>
+      <end>'</end>
+    </context>
+
+    <context id="pragma" style-ref="pragma">
+      <start>\{</start>
+      <end>}</end>
+    </context>
+
+    <context id="number" style-ref="number">
+      <match extended="true">
+        \b(?:
+          0[xX][0-9A-Fa-f][0-9A-Fa-f_]* |
+          0[oO][0-7][0-7_]* |
+          0[bB][01][01_]* |
+          [0-9][0-9_]*(?:\.[0-9_]+)?(?:[eE][+-]?[0-9_]+)?
+        )\b
+      </match>
+    </context>
+
+    <context id="boolean" style-ref="boolean">
+      <keyword>true</keyword>
+      <keyword>false</keyword>
+    </context>
+
+    <context id="keyword" style-ref="keyword">
+      <keyword>addr</keyword>
+      <keyword>and</keyword>
+      <keyword>as</keyword>
+      <keyword>asm</keyword>
+      <keyword>bind</keyword>
+      <keyword>block</keyword>
+      <keyword>break</keyword>
+      <keyword>case</keyword>
+      <keyword>cast</keyword>
+      <keyword>concept</keyword>
+      <keyword>const</keyword>
+      <keyword>continue</keyword>
+      <keyword>converter</keyword>
+      <keyword>defer</keyword>
+      <keyword>discard</keyword>
+      <keyword>distinct</keyword>
+      <keyword>div</keyword>
+      <keyword>do</keyword>
+      <keyword>elif</keyword>
+      <keyword>else</keyword>
+      <keyword>end</keyword>
+      <keyword>enum</keyword>
+      <keyword>except</keyword>
+      <keyword>export</keyword>
+      <keyword>finally</keyword>
+      <keyword>for</keyword>
+      <keyword>from</keyword>
+      <keyword>func</keyword>
+      <keyword>if</keyword>
+      <keyword>import</keyword>
+      <keyword>in</keyword>
+      <keyword>include</keyword>
+      <keyword>interface</keyword>
+      <keyword>is</keyword>
+      <keyword>isnot</keyword>
+      <keyword>iterator</keyword>
+      <keyword>let</keyword>
+      <keyword>macro</keyword>
+      <keyword>method</keyword>
+      <keyword>mixin</keyword>
+      <keyword>mod</keyword>
+      <keyword>nil</keyword>
+      <keyword>not</keyword>
+      <keyword>notin</keyword>
+      <keyword>object</keyword>
+      <keyword>of</keyword>
+      <keyword>or</keyword>
+      <keyword>out</keyword>
+      <keyword>proc</keyword>
+      <keyword>ptr</keyword>
+      <keyword>raise</keyword>
+      <keyword>ref</keyword>
+      <keyword>return</keyword>
+      <keyword>shl</keyword>
+      <keyword>shr</keyword>
+      <keyword>static</keyword>
+      <keyword>template</keyword>
+      <keyword>try</keyword>
+      <keyword>tuple</keyword>
+      <keyword>type</keyword>
+      <keyword>using</keyword>
+      <keyword>var</keyword>
+      <keyword>when</keyword>
+      <keyword>while</keyword>
+      <keyword>xor</keyword>
+      <keyword>yield</keyword>
+    </context>
+  </definitions>
+</language>

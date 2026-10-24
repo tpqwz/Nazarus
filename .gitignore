@@ -1,0 +1,9 @@
+nimcache/
+hcr_cache/
+*.exe
+examples/hello/hello
+examples/Greeter/Greeter
+examples/Greeter/nimcache/
+tests/test_ncl
+tests/test_gtk
+tests/test_build
