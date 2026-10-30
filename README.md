@@ -4,11 +4,28 @@ Nazarus is a Lazarus-style RAD GUI IDE for Nim. The component library is NCL (th
 
 The IDE and the code you write in it are Nim. Names you already know are still there: `TForm`, `TButton`, `TForm1`. A form file is `.nfm` (the `.lfm` equivalent) and a project file is `.npr` (the `.lpi` equivalent).
 
-## Build and run
+**Status: alpha** (`0.1.0-alpha.1`). The editor, the designer, and the GTK 3 widgetset are usable. There is no debugger, no package manager, and no widgetset other than GTK 3. Published releases are git tags. `v0.1.0-alpha.1` is the first alpha.
 
-Nim 2 and GTK 3 are required. The shared libraries are loaded by soname (`libgtk-3.so.0`, `libgtksourceview-4.so.0`), so development headers are not required.
+## Install
+
+A Linux x86-64 build is attached to each [release](https://github.com/tpqwz/Nazarus/releases). Unpack it and run `nazarus`. The machine needs `libgtk-3.so.0` and `libgtksourceview-4.so.0`. The archive contains `share/` and `libnimsyn.so` beside the binary, and the program loads those first.
 
 ```
+tar -xzf nazarus-0.1.0-alpha.1-linux-x64.tar.gz
+cd nazarus-0.1.0-alpha.1-linux-x64
+./nazarus
+```
+
+## License
+
+Nazarus's own code is MIT. See [LICENSE](LICENSE). The vendored tree-sitter runtime is MIT. The vendored Nim grammar (`third_party/tree-sitter-nim/`) is MPL-2.0. The Unicode tables under `third_party/tree-sitter/lib/src/unicode/` keep the Unicode, Inc. permission notice.
+
+## Build and run
+
+Nim 2.2 and GTK 3 are required. The shared libraries are loaded by soname (`libgtk-3.so.0`, `libgtksourceview-4.so.0`), so development headers are not required. Build the Nim syntax library once, then compile the IDE:
+
+```
+sh third_party/build-nimsyn.sh
 nim c -r src/nazarus.nim
 ```
 
@@ -98,6 +115,6 @@ nim c -r tests/test_ededit.nim
 
 ## History
 
-The repo is Jujutsu (`jj`), colocated with Git. The bookmark `restore-point` is the known-good snapshot of this tree. How to return to it, undo a `jj` command, and cut a new restore point is in [RESTORE.md](RESTORE.md).
+The repo is Jujutsu (`jj`), colocated with Git. The bookmark `restore-point` is the known-good snapshot of this tree. How to return to it, undo a `jj` command, and cut a new restore point is in [RESTORE.md](RESTORE.md). Published releases are git tags on [github.com/tpqwz/Nazarus](https://github.com/tpqwz/Nazarus). `v0.1.0-alpha.1` is the first alpha.
 
 This snapshot replaces the Greeter sample with Atlas, adds Search, and records the Design, Code, and Explore IDE: the file list, the procedure dropdown, the scope rails, designer selection and clipboard, and a component palette that stays on Design. `generateUnit` keeps a declaration block above the events. The notes for that tree are in [RESTORE.md](RESTORE.md).

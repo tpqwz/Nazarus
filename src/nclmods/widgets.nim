@@ -1778,11 +1778,12 @@ proc nimLanguage(): pointer =
   if langTried: return nimLang
   langTried = true
   let mgr = gtk_source_language_manager_get_default()
-  let dirs = allocCStringArray([NazarusShare, "/usr/share/gtksourceview-4/language-specs"])
+  let share = nazarusShare()
+  let dirs = allocCStringArray([share, "/usr/share/gtksourceview-4/language-specs"])
   gtk_source_language_manager_set_search_path(mgr, dirs)
   nimLang = gtk_source_language_manager_get_language(mgr, "nim".cstring)
   if nimLang == nil:
-    stderr.writeLine("Nazarus: no Nim syntax spec in " & NazarusShare)
+    stderr.writeLine("Nazarus: no Nim syntax spec in " & share)
   nimLang
 
 proc nimScheme(): pointer =
@@ -1790,11 +1791,12 @@ proc nimScheme(): pointer =
   if schemeTried: return nimSchemePtr
   schemeTried = true
   let mgr = gtk_source_style_scheme_manager_get_default()
-  gtk_source_style_scheme_manager_prepend_search_path(mgr, NazarusShare.cstring)
+  let share = nazarusShare()
+  gtk_source_style_scheme_manager_prepend_search_path(mgr, share.cstring)
   gtk_source_style_scheme_manager_force_rescan(mgr)
   nimSchemePtr = gtk_source_style_scheme_manager_get_scheme(mgr, "nazarus".cstring)
   if nimSchemePtr == nil:
-    stderr.writeLine("Nazarus: no style scheme in " & NazarusShare)
+    stderr.writeLine("Nazarus: no style scheme in " & share)
   nimSchemePtr
 
 proc text*(self: TSourceEditor): string =

@@ -1,0 +1,94 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgtk-3-dev libgtksourceview-4-dev
+
+      - name: Install Nim 2.2.12
+        run: |
+          curl -fsSL https://nim-lang.org/choosenim/init.sh | sh -s -- -y
+          echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.nimble/bin:$PATH"
+          choosenim 2.2.12
+          nim --version
+
+      - name: Check the version string
+        run: |
+          nimble_ver=$(awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' nazarus.nimble)
+          src_ver=$(awk -F'"' '/NazarusVersion/ {print $2; exit}' src/version.nim)
+          echo "nimble=$nimble_ver source=$src_ver"
+          test -n "$src_ver"
+          test "$nimble_ver" = "$src_ver"
+
+      - name: Build libnimsyn.so
+        run: sh third_party/build-nimsyn.sh
+
+      - name: Compile Nazarus
+        run: |
+          ver=$(awk -F'"' '/NazarusVersion/ {print $2; exit}' src/version.nim)
+          mkdir -p "dist/nazarus-${ver}-linux-x64"
+          nim c -d:release --hints:off -o:"dist/nazarus-${ver}-linux-x64/nazarus" src/nazarus.nim
+
+      - name: Test
+        run: |
+          nim c -r --hints:off tests/test_ncl.nim
+          nim c -r --hints:off --path:examples/Atlas tests/test_atlas.nim
+          nim c -r --hints:off --path:examples/Search tests/test_search.nim
+          nim c -r --hints:off tests/test_nimsyn.nim
+          nim c -r --hints:off tests/test_edsearch.nim
+          nim c -r --hints:off tests/test_ededit.nim
+
+      - name: Package
+        run: |
+          ver=$(awk -F'"' '/NazarusVersion/ {print $2; exit}' src/version.nim)
+          stage="dist/nazarus-${ver}-linux-x64"
+          cp third_party/libnimsyn.so "$stage/libnimsyn.so"
+          cp -a share "$stage/share"
+          cp LICENSE README.md "$stage/"
+          tar -C dist -czf "dist/nazarus-${ver}-linux-x64.tar.gz" "nazarus-${ver}-linux-x64"
+
+      - name: Upload the executable archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nazarus-linux-x64
+          path: dist/*.tar.gz
+
+  release:
+    needs: linux
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the executable archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nazarus-linux-x64
+          path: dist
+
+      - name: Publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, '-rc') }}
+          generate_release_notes: false
+          body: |
+            Alpha build of Nazarus for Linux x86-64.
+            Unpack the archive and run `nazarus`. The system needs `libgtk-3.so.0` and `libgtksourceview-4.so.0`.
+            The archive includes `share/` and `libnimsyn.so` beside the binary.

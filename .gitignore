@@ -14,3 +14,4 @@ tests/test_atlas
 tests/test_nimsyn
 tests/test_edsearch
 tests/test_ededit
+dist/

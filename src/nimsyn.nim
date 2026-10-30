@@ -6,7 +6,13 @@
 
 import std/[os, strutils]
 
-const NimSynLib = currentSourcePath().parentDir().parentDir() / "third_party" / "libnimsyn.so"
+proc nimSynLib(): string =
+  ## Prefer libnimsyn.so next to the executable. A source-tree build
+  ## falls back to third_party/libnimsyn.so.
+  let beside = getAppFilename().parentDir / "libnimsyn.so"
+  if fileExists(beside):
+    return beside
+  currentSourcePath().parentDir().parentDir() / "third_party" / "libnimsyn.so"
 
 type
   TSPoint {.bycopy.} = object
@@ -35,23 +41,23 @@ type
     scopes*: seq[TNimScope]
     jumps*: seq[TNimJump]
 
-proc ts_parser_new(): pointer {.importc, dynlib: NimSynLib.}
-proc ts_parser_set_language(p, lang: pointer): bool {.importc, dynlib: NimSynLib.}
-proc ts_parser_parse_string(p, old: pointer, s: cstring, n: uint32): pointer {.importc, dynlib: NimSynLib.}
-proc ts_tree_delete(t: pointer) {.importc, dynlib: NimSynLib.}
-proc ts_tree_root_node(t: pointer): TSNode {.importc, dynlib: NimSynLib.}
-proc tree_sitter_nim(): pointer {.importc, dynlib: NimSynLib.}
-proc ts_node_type(n: TSNode): cstring {.importc, dynlib: NimSynLib.}
-proc ts_node_is_null(n: TSNode): bool {.importc, dynlib: NimSynLib.}
-proc ts_node_is_named(n: TSNode): bool {.importc, dynlib: NimSynLib.}
-proc ts_node_is_error(n: TSNode): bool {.importc, dynlib: NimSynLib.}
-proc ts_node_start_byte(n: TSNode): uint32 {.importc, dynlib: NimSynLib.}
-proc ts_node_end_byte(n: TSNode): uint32 {.importc, dynlib: NimSynLib.}
-proc ts_node_start_point(n: TSNode): TSPoint {.importc, dynlib: NimSynLib.}
-proc ts_node_end_point(n: TSNode): TSPoint {.importc, dynlib: NimSynLib.}
-proc ts_node_named_child(n: TSNode, i: uint32): TSNode {.importc, dynlib: NimSynLib.}
-proc ts_node_named_child_count(n: TSNode): uint32 {.importc, dynlib: NimSynLib.}
-proc ts_node_child_by_field_name(n: TSNode, name: cstring, nameLen: uint32): TSNode {.importc, dynlib: NimSynLib.}
+proc ts_parser_new(): pointer {.importc, dynlib: nimSynLib().}
+proc ts_parser_set_language(p, lang: pointer): bool {.importc, dynlib: nimSynLib().}
+proc ts_parser_parse_string(p, old: pointer, s: cstring, n: uint32): pointer {.importc, dynlib: nimSynLib().}
+proc ts_tree_delete(t: pointer) {.importc, dynlib: nimSynLib().}
+proc ts_tree_root_node(t: pointer): TSNode {.importc, dynlib: nimSynLib().}
+proc tree_sitter_nim(): pointer {.importc, dynlib: nimSynLib().}
+proc ts_node_type(n: TSNode): cstring {.importc, dynlib: nimSynLib().}
+proc ts_node_is_null(n: TSNode): bool {.importc, dynlib: nimSynLib().}
+proc ts_node_is_named(n: TSNode): bool {.importc, dynlib: nimSynLib().}
+proc ts_node_is_error(n: TSNode): bool {.importc, dynlib: nimSynLib().}
+proc ts_node_start_byte(n: TSNode): uint32 {.importc, dynlib: nimSynLib().}
+proc ts_node_end_byte(n: TSNode): uint32 {.importc, dynlib: nimSynLib().}
+proc ts_node_start_point(n: TSNode): TSPoint {.importc, dynlib: nimSynLib().}
+proc ts_node_end_point(n: TSNode): TSPoint {.importc, dynlib: nimSynLib().}
+proc ts_node_named_child(n: TSNode, i: uint32): TSNode {.importc, dynlib: nimSynLib().}
+proc ts_node_named_child_count(n: TSNode): uint32 {.importc, dynlib: nimSynLib().}
+proc ts_node_child_by_field_name(n: TSNode, name: cstring, nameLen: uint32): TSNode {.importc, dynlib: nimSynLib().}
 
 var
   parser: pointer

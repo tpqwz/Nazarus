@@ -9,6 +9,7 @@ import nimsyn
 import project
 import edsearch
 import ededit
+import version
 
 type
   TUnit = ref object
@@ -527,7 +528,7 @@ proc showUnit(u: TUnit) =
   enableDesign(u.form, host)
   refreshTree()
   fillUnits()
-  if proj != nil: ideForm.caption = "Nazarus - " & proj.name & " - " & u.name
+  if proj != nil: ideForm.caption = "Nazarus " & NazarusVersion & " - " & proj.name & " - " & u.name
   if pages.activePageIndex == 1: refreshEditor()
   else:
     refreshDesign()
@@ -972,7 +973,7 @@ proc doToggleView() =
 proc doQuit() = application.terminate()
 
 proc doAbout() =
-  showMessage("Nazarus\nA Lazarus-style RAD GUI IDE for Nim.\nDesign the form, write Nim, press F9.")
+  showMessage("Nazarus " & NazarusVersion & "\nA Lazarus-style RAD GUI IDE for Nim.\nAlpha software.\nDesign the form, write Nim, press F9.")
 
 proc doDebugNote(sender: TObject) =
   ## The Debug menu names the commands a debugger would own. None of them run yet.
@@ -1159,7 +1160,7 @@ proc refitChromeButtons() =
 
 proc buildChrome() =
   ideForm = TForm.new()
-  ideForm.caption = "Nazarus"
+  ideForm.caption = "Nazarus " & NazarusVersion
   ideForm.width = 1180
   ideForm.height = 760
   ideForm.position = poScreenCenter
