@@ -7,13 +7,14 @@ import ncl
 import codegen
 import nimsyn
 import project
+import edsearch
+import ededit
 
 type
   TUnit = ref object
     name: string
     form: TForm
     source: string
-    findFrom: int
   TExploreKind = enum ekForm, ekControl, ekProc
   TExploreHit = object
     kind: TExploreKind
@@ -48,6 +49,8 @@ var
   exploreRows: seq[TExploreHit]
   findBar: TPanel
   findEdit: TEdit
+  replaceEdit: TEdit
+  lineEdit: TEdit
   messages: TMemo
   statusBar: TStatusBar
   unitCombo: TComboBox
@@ -69,6 +72,13 @@ proc doSave()
 proc doCompile()
 proc doRun()
 proc doFind()
+proc doFindNext()
+proc doFindPrev()
+proc doReplace()
+proc doReplaceAll()
+proc doGoLine()
+proc doComment()
+proc doShift(outward: bool)
 proc doToggleView()
 proc doQuit()
 proc doAbout()
@@ -103,19 +113,24 @@ proc procAtLine(line: int): int =
       result = i
 
 proc refreshCodeStructure() =
-  ## Fill the procedure dropdown and the scope rails from the editor text.
+  ## Fill the procedure dropdown, the scope rails, and the jump lanes.
   if editor == nil or procCombo == nil or not editor.hasBuffer: return
   let src = editor.text
   let outline = nimOutline(src)
   var rails: seq[TScopeRail]
+  var jumps: seq[TJumpMark]
   codeProcs.setLen(0)
   if outline.ok:
     for s in outline.scopes:
       rails.add(TScopeRail(openLine: s.openLine, closeLine: s.closeLine, depth: s.depth))
+    for j in outline.jumps:
+      jumps.add(TJumpMark(fromLine: j.fromLine, toLine: j.toLine,
+        column: j.column, backward: j.backward))
     codeProcs = outline.procs
   else:
     for item in procNames(src):
       codeProcs.add(TNimProc(name: item.name, line: item.line, closeLine: item.line, depth: 0))
+  editor.jumpMarks = jumps
   editor.scopeRails = rails
   var names = @["(declarations)"]
   for p in codeProcs:
@@ -756,30 +771,199 @@ proc jumpMessage() =
 proc doCompile() = startBuild(false)
 proc doRun() = startBuild(true)
 
-proc doFind() =
-  if findBar == nil: return
-  showCode()
-  findBar.visible = true
-  if findEdit != nil: findEdit.focus()
+proc controlNames(root: TComponent): seq[string] =
+  for c in root.ownedComponents:
+    result.add(c.name)
+    result.add(controlNames(c))
 
-proc findNext() =
-  if current == nil or editor == nil or findEdit == nil: return
-  let needle = findEdit.text
-  if needle.len == 0: return
-  let src = editor.text
-  var idx = src.find(needle, current.findFrom)
-  if idx < 0 and current.findFrom > 0:
-    idx = src.find(needle)
-  if idx < 0:
-    setStatus("Not found")
-    current.findFrom = 0
+proc doDeclare() =
+  ## F3. A proc name jumps to that routine. A component name selects it on the form.
+  if editor == nil or not editor.hasBuffer:
+    setStatus("Open a unit to look up a name")
     return
-  current.findFrom = idx + max(1, needle.len)
-  var line = 1
-  for i in 0 ..< idx:
-    if src[i] == '\n': inc line
-  editor.gotoLine(line)
-  setStatus("Found at line " & $line)
+  refreshCodeStructure()
+  let lines = editor.text.splitLines
+  let lineNo = editor.caretLine
+  if lineNo < 1 or lineNo > lines.len:
+    setStatus("No name under the caret")
+    return
+  let word = identAt(lines[lineNo - 1], editor.caretColumn)
+  if word.len == 0:
+    setStatus("No name under the caret")
+    return
+  var formName = ""
+  var controls: seq[string]
+  if current != nil and current.form != nil:
+    formName = current.form.name
+    controls = controlNames(current.form)
+  let hit = declarationTarget(word, codeProcs, formName, controls)
+  case hit.kind
+  of dkNone:
+    setStatus("No declaration for " & word)
+  of dkProc:
+    let unitName = if current == nil: "unit" else: current.name
+    # Showing Code rebuilds the buffer and moves the caret, so a jump from
+    # Design looks the name up again. From Code the line is already right.
+    if pages == nil or pages.activePageIndex != 1:
+      showCode()
+      let again = declarationTarget(word, codeProcs, "", @[])
+      if again.kind != dkProc or editor == nil:
+        setStatus("No declaration for " & word)
+      else:
+        editor.gotoLine(again.line)
+        setStatus(again.name & " · " & unitName & ".nim:" & $again.line)
+    elif hit.line == lineNo:
+      setStatus("Already at " & hit.name)
+    elif editor != nil:
+      editor.gotoLine(hit.line)
+      setStatus(hit.name & " · " & unitName & ".nim:" & $hit.line)
+  of dkForm, dkControl:
+    if current == nil or current.form == nil:
+      setStatus("No declaration for " & word)
+      return
+    let found = if hit.kind == dkForm: TComponent(current.form)
+                else: current.form.findComponent(hit.name)
+    if found == nil:
+      setStatus("No declaration for " & word)
+      return
+    showDesign()
+    selectComponent(found)
+    setStatus(hit.name)
+
+proc ensureCode() =
+  ## showCode reloads the unit and parks the caret on line 1.
+  ## A search that is already in Code must keep the caret.
+  if pages == nil: return
+  if pages.activePageIndex != 1: showCode()
+
+proc seedFind() =
+  ## A single-line selection becomes the needle. A span of lines does not.
+  if findEdit == nil or editor == nil: return
+  if pages == nil or pages.activePageIndex != 1: return
+  if not editor.hasBuffer: return
+  let span = editor.selectionChars()
+  if not span.any: return
+  let src = editor.text
+  let slice = src[byteAt(src, span.a) ..< byteAt(src, span.b)]
+  if slice.len == 0 or '\n' in slice: return
+  findEdit.text = slice
+
+proc showSearch(slot: string) =
+  seedFind()
+  ensureCode()
+  if findBar != nil: findBar.visible = true
+  if slot == "replace" and replaceEdit != nil: replaceEdit.focus()
+  elif slot == "line" and lineEdit != nil: lineEdit.focus()
+  elif findEdit != nil: findEdit.focus()
+
+proc searchOrigin(backward: bool): int =
+  ## When the selection is the needle, the next search starts past that match.
+  let src = editor.text
+  let needle = if findEdit == nil: "" else: findEdit.text
+  let span = editor.selectionChars()
+  if span.any and needle.len > 0:
+    let slice = src[byteAt(src, span.a) ..< byteAt(src, span.b)]
+    if slice == needle:
+      if backward: return byteAt(src, span.a)
+      else: return byteAt(src, span.b)
+  byteAt(src, editor.insertChars())
+
+proc noteHit(hit: TFindHit, backward, replaced: bool) =
+  if hit.index < 0:
+    if replaced: setStatus("Replaced. No further matches")
+    else: setStatus("Not found")
+    return
+  var s = if replaced: "Replaced. Next is line " & $hit.line
+          else: "Found at line " & $hit.line
+  if hit.wrapped:
+    if backward: s.add(", from the end")
+    else: s.add(", from the start")
+  setStatus(s)
+
+proc search(backward: bool) =
+  if editor == nil or findEdit == nil: return
+  ensureCode()
+  if findBar != nil: findBar.visible = true
+  let needle = findEdit.text
+  if needle.len == 0:
+    setStatus("Find what?")
+    findEdit.focus()
+    return
+  if not editor.hasBuffer: return
+  let hit = findLiteral(editor.text, needle, searchOrigin(backward), backward)
+  if hit.index >= 0:
+    editor.selectCharRange(hit.charIndex, hit.charIndex + hit.charLen)
+  noteHit(hit, backward, false)
+
+proc doFind() = showSearch("find")
+proc doFindNext() = search(false)
+proc doFindPrev() = search(true)
+proc doReplace() = showSearch("replace")
+
+proc replaceOne() =
+  if editor == nil or findEdit == nil or replaceEdit == nil: return
+  ensureCode()
+  if findBar != nil: findBar.visible = true
+  let needle = findEdit.text
+  if needle.len == 0:
+    setStatus("Find what?")
+    findEdit.focus()
+    return
+  if not editor.hasBuffer: return
+  let src = editor.text
+  let span = editor.selectionChars()
+  var replaced = false
+  if span.any:
+    let slice = src[byteAt(src, span.a) ..< byteAt(src, span.b)]
+    if slice == needle:
+      editor.replaceCharRange(span.a, span.b, replaceEdit.text)
+      replaced = true
+  let hit = findLiteral(editor.text, needle, searchOrigin(false), false)
+  if hit.index >= 0:
+    editor.selectCharRange(hit.charIndex, hit.charIndex + hit.charLen)
+  if replaced: refreshCodeStructure()
+  noteHit(hit, false, replaced)
+
+proc doReplaceAll() =
+  if editor == nil or findEdit == nil or replaceEdit == nil: return
+  ensureCode()
+  if findBar != nil: findBar.visible = true
+  let needle = findEdit.text
+  if needle.len == 0:
+    setStatus("Find what?")
+    findEdit.focus()
+    return
+  if not editor.hasBuffer: return
+  let got = replaceAllLiteral(editor.text, needle, replaceEdit.text)
+  if got.count == 0:
+    setStatus("Not found")
+    return
+  editor.replaceWholeText(got.text)
+  refreshCodeStructure()
+  setStatus("Replaced " & $got.count)
+
+proc doGoLine() =
+  ensureCode()
+  if findBar != nil: findBar.visible = true
+  if lineEdit == nil or editor == nil or not editor.hasBuffer: return
+  let raw = lineEdit.text.strip()
+  if raw.len == 0:
+    lineEdit.focus()
+    return
+  var n = 0
+  try: n = parseInt(raw) except: n = -1
+  if n < 1:
+    setStatus("Not a line number")
+    lineEdit.focus()
+    return
+  var count = editor.lineCount()
+  if count < 1: count = 1
+  if n > count:
+    editor.gotoLine(count)
+    setStatus("Only " & $count & " lines")
+  else:
+    editor.gotoLine(n)
+    setStatus("Line " & $n)
 
 proc doToggleView() =
   if pages == nil: return
@@ -835,6 +1019,116 @@ proc doPaste() =
     if editor != nil: editor.editPaste()
     return
   discard designPaste()
+
+proc applyLineEdit(src: string, got: TCommentEdit) =
+  ## One undo step. Replace the whole span, then select the lines that moved.
+  ## A move's selection is only the block, which is shorter than the span.
+  let slice = got.text[got.oldStart ..< replacedFinish(src, got)]
+  editor.replaceCharRange(charsBefore(src, got.oldStart), charsBefore(src, got.oldFinish),
+    slice, scroll = false)
+  let shown = editor.text
+  let startChar = charsBefore(shown, got.newStart)
+  editor.selectCharRange(startChar, charsBefore(shown, got.newFinish), caretAtStart = true)
+  editor.revealChar(startChar)
+  refreshCodeStructure()
+
+proc doComment() =
+  ## `#` after the indent. Every commented line in the range loses one mark.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to comment")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = toggleComment(src, byteAt(src, span.a), byteAt(src, span.b))
+  applyLineEdit(src, got)
+  if got.removed: setStatus("Uncommented")
+  else: setStatus("Commented")
+
+proc doShift(outward: bool) =
+  ## Two spaces at the start of each line. Unindent removes one level.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to indent")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = shiftLines(src, byteAt(src, span.a), byteAt(src, span.b), 2, outward)
+  if got.text != src: applyLineEdit(src, got)
+  if outward: setStatus("Indented")
+  else: setStatus("Unindented")
+
+proc doMove(down: bool) =
+  ## Swap the current lines with the line above or the line below.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to move a line")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = moveLines(src, byteAt(src, span.a), byteAt(src, span.b), down)
+  if got.text != src: applyLineEdit(src, got)
+  if got.text == src:
+    if down: setStatus("At the bottom")
+    else: setStatus("At the top")
+  elif down: setStatus("Moved down")
+  else: setStatus("Moved up")
+
+proc doDuplicate() =
+  ## Copy the current lines and leave the copy selected underneath.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to duplicate a line")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = duplicateLines(src, byteAt(src, span.a), byteAt(src, span.b))
+  applyLineEdit(src, got)
+  setStatus("Duplicated")
+
+proc doDeleteLines() =
+  ## Remove the current lines. The line below slides up to the caret.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to delete a line")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = deleteLines(src, byteAt(src, span.a), byteAt(src, span.b))
+  if got.text != src: applyLineEdit(src, got)
+  setStatus("Deleted")
+
+proc doJoin() =
+  ## The current line takes in the next one. A selection joins every line in it.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to join lines")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = joinLines(src, byteAt(src, span.a), byteAt(src, span.b))
+  if got.text != src: applyLineEdit(src, got)
+  if got.text == src: setStatus("Nothing to join")
+  else: setStatus("Joined")
+
+proc doInsertLine(above: bool) =
+  ## A blank line above or below the current lines. It keeps their indent.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to insert a line")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = insertLine(src, byteAt(src, span.a), byteAt(src, span.b), above)
+  applyLineEdit(src, got)
+  if above: setStatus("Inserted above")
+  else: setStatus("Inserted below")
+
+proc doCase(upper: bool) =
+  ## The selection, or the word at the caret, changes case.
+  if not editingCode() or editor == nil or not editor.hasBuffer:
+    setStatus("Switch to Code to change case")
+    return
+  let src = editor.text
+  let span = editor.selectionChars()
+  let got = changeCase(src, byteAt(src, span.a), byteAt(src, span.b), upper)
+  if got.text != src: applyLineEdit(src, got)
+  if got.text == src: setStatus("Nothing to change")
+  elif upper: setStatus("Uppercase")
+  else: setStatus("Lowercase")
 
 proc armPalette(cls: string) =
   `designTool=`(cls)
@@ -897,6 +1191,42 @@ proc buildChrome() =
   miCopy.onClick = proc(sender: TObject) = doCopy()
   let miPaste = mEdit.add("&Paste")
   miPaste.onClick = proc(sender: TObject) = doPaste()
+  let miComment = mEdit.add("Toggle &Comment")
+  miComment.shortCut = "Ctrl+/"
+  miComment.onClick = proc(sender: TObject) = doComment()
+  let miIndent = mEdit.add("&Indent")
+  miIndent.shortCut = "Ctrl+Shift+I"
+  miIndent.onClick = proc(sender: TObject) = doShift(true)
+  let miUnindent = mEdit.add("&Unindent")
+  miUnindent.shortCut = "Ctrl+Shift+U"
+  miUnindent.onClick = proc(sender: TObject) = doShift(false)
+  let miUp = mEdit.add("&Move Up")
+  miUp.shortCut = "Alt+Up"
+  miUp.onClick = proc(sender: TObject) = doMove(false)
+  let miDown = mEdit.add("Move &Down")
+  miDown.shortCut = "Alt+Down"
+  miDown.onClick = proc(sender: TObject) = doMove(true)
+  let miDup = mEdit.add("Duplicate &Line")
+  miDup.shortCut = "Ctrl+Shift+D"
+  miDup.onClick = proc(sender: TObject) = doDuplicate()
+  let miDelLine = mEdit.add("Delete Lin&e")
+  miDelLine.shortCut = "Ctrl+Shift+K"
+  miDelLine.onClick = proc(sender: TObject) = doDeleteLines()
+  let miJoin = mEdit.add("&Join Lines")
+  miJoin.shortCut = "Ctrl+J"
+  miJoin.onClick = proc(sender: TObject) = doJoin()
+  let miBelow = mEdit.add("Insert Line &Below")
+  miBelow.shortCut = "Ctrl+Enter"
+  miBelow.onClick = proc(sender: TObject) = doInsertLine(false)
+  let miAbove = mEdit.add("Insert Line Abo&ve")
+  miAbove.shortCut = "Ctrl+Shift+Enter"
+  miAbove.onClick = proc(sender: TObject) = doInsertLine(true)
+  let miUpper = mEdit.add("Upperca&se")
+  miUpper.shortCut = "Ctrl+Shift+X"
+  miUpper.onClick = proc(sender: TObject) = doCase(true)
+  let miLower = mEdit.add("Lo&wercase")
+  miLower.shortCut = "Ctrl+Shift+Y"
+  miLower.onClick = proc(sender: TObject) = doCase(false)
   discard mEdit.add("-")
   let mAlign = mEdit.add("&Align")
   proc alignTo(edge: TDesignAlign) =
@@ -904,7 +1234,10 @@ proc buildChrome() =
       setStatus("Open a form to align controls")
       return
     showDesign()
-    if designAlign(edge) < 2:
+    let n = designAlign(edge)
+    if edge in {daSpaceH, daSpaceV}:
+      if n < 3: setStatus("Select three or more controls to space them")
+    elif n < 2:
       setStatus("Select two or more controls to align")
   # The edge is a parameter, so each item keeps its own. A loop variable
   # would be one slot and every item would align the same way.
@@ -917,6 +1250,46 @@ proc buildChrome() =
   alignItem("Align &Bottom", daBottom)
   alignItem("Center &Horizontally", daCenterH)
   alignItem("Center &Vertically", daCenterV)
+  alignItem("Same &Width", daSameW)
+  alignItem("Same Hei&ght", daSameH)
+  alignItem("Same &Size", daSameSize)
+  alignItem("Space &Horizontally", daSpaceH)
+  alignItem("Space &Vertically", daSpaceV)
+  let mOrder = mEdit.add("&Order")
+  proc orderTo(front: bool) =
+    if designForm() == nil:
+      setStatus("Open a form to change order")
+      return
+    showDesign()
+    let n = designOrder(front)
+    if n == 0: setStatus("Select a control to change its order")
+    elif front: setStatus("Brought to front")
+    else: setStatus("Sent to back")
+  proc orderItem(caption: string, front: bool) =
+    let it = mOrder.add(caption)
+    it.onClick = proc(sender: TObject) = orderTo(front)
+  orderItem("&Bring to Front", true)
+  orderItem("&Send to Back", false)
+
+  let mSearch = menu.add("&Search")
+  let miFind = mSearch.add("&Find...")
+  miFind.shortCut = "Ctrl+F"
+  miFind.onClick = proc(sender: TObject) = doFind()
+  let miNext = mSearch.add("Find &Next")
+  miNext.shortCut = "Ctrl+F3"
+  miNext.onClick = proc(sender: TObject) = doFindNext()
+  let miPrev = mSearch.add("Find &Previous")
+  miPrev.shortCut = "Ctrl+Shift+F3"
+  miPrev.onClick = proc(sender: TObject) = doFindPrev()
+  let miReplace = mSearch.add("&Replace...")
+  miReplace.shortCut = "Ctrl+R"
+  miReplace.onClick = proc(sender: TObject) = doReplace()
+  let miAll = mSearch.add("Replace &All")
+  miAll.onClick = proc(sender: TObject) = doReplaceAll()
+  discard mSearch.add("-")
+  let miLine = mSearch.add("Go to &Line...")
+  miLine.shortCut = "Ctrl+G"
+  miLine.onClick = proc(sender: TObject) = doGoLine()
 
   let mView = menu.add("&View")
   let miDesign = mView.add("&Design")
@@ -954,9 +1327,9 @@ proc buildChrome() =
     let designing = pages == nil or pages.activePageIndex == 0
     if palette != nil: palette.visible = paletteOn and designing
   discard mView.add("-")
-  let miFind = mView.add("&Find...")
-  miFind.shortCut = "Ctrl+F"
-  miFind.onClick = proc(sender: TObject) = doFind()
+  let miDecl = mView.add("Go to &Declaration")
+  miDecl.shortCut = "F3"
+  miDecl.onClick = proc(sender: TObject) = doDeclare()
 
   let mRun = menu.add("&Run")
   let miRun = mRun.add("&Run")
@@ -1176,21 +1549,33 @@ proc buildChrome() =
   findBar.height = 32
   findBar.visible = false
   findBar.bevel = bvNone
-  findEdit = TEdit.new(ideForm)
-  findEdit.parent = findBar
-  findEdit.left = 8
-  findEdit.top = 4
-  findEdit.width = 220
-  let findBtn = TButton.new(ideForm)
-  findBtn.parent = findBar
-  findBtn.caption = "Find"
-  findBtn.left = 236
-  findBtn.top = 3
-  findBtn.width = 64
-  findBtn.height = 26
-  findBtn.onClick = proc(sender: TObject) = findNext()
-  findEdit.onChange = proc(sender: TObject) =
-    if current != nil: current.findFrom = 0
+  proc searchEdit(left, width: int, cue: string): TEdit =
+    result = TEdit.new(ideForm)
+    result.parent = findBar
+    result.left = left
+    result.top = 4
+    result.width = width
+    result.cue = cue
+  proc searchBtn(left, width: int, caption: string, act: proc()) =
+    let b = TButton.new(ideForm)
+    b.parent = findBar
+    b.caption = caption
+    b.left = left
+    b.top = 3
+    b.width = width
+    b.height = 26
+    b.onClick = proc(sender: TObject) = act()
+  findEdit = searchEdit(8, 188, "Find")
+  findEdit.onReturn = proc(sender: TObject) = doFindNext()
+  searchBtn(202, 56, "Next", doFindNext)
+  searchBtn(262, 56, "Prev", doFindPrev)
+  replaceEdit = searchEdit(328, 160, "Replace")
+  replaceEdit.onReturn = proc(sender: TObject) = replaceOne()
+  searchBtn(494, 72, "Replace", replaceOne)
+  searchBtn(572, 104, "Replace All", doReplaceAll)
+  lineEdit = searchEdit(708, 64, "Line")
+  lineEdit.onReturn = proc(sender: TObject) = doGoLine()
+  searchBtn(778, 44, "Go", doGoLine)
 
   editor = TSourceEditor.new(ideForm)
   editor.parent = codeBody

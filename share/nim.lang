@@ -14,14 +14,15 @@
     <style id="number" name="Number" map-to="def:number"/>
     <style id="type" name="Type" map-to="def:type"/>
     <style id="pragma" name="Pragma" map-to="def:preprocessor"/>
+    <style id="operator" name="Operator" map-to="def:operator"/>
   </styles>
 
   <definitions>
-    <context id="line-comment" style-ref="comment" end-at-line-end="true">
+    <context id="line-comment" style-ref="comment" class="comment" end-at-line-end="true">
       <start>#(?!\[)</start>
     </context>
 
-    <context id="block-comment" style-ref="comment">
+    <context id="block-comment" style-ref="comment" class="comment">
       <start>#\[</start>
       <end>]#</end>
       <include>
@@ -29,17 +30,17 @@
       </include>
     </context>
 
-    <context id="triple-string" style-ref="string">
+    <context id="triple-string" style-ref="string" class="string">
       <start>"""</start>
       <end>"""</end>
     </context>
 
-    <context id="raw-string" style-ref="string">
+    <context id="raw-string" style-ref="string" class="string">
       <start>r"</start>
       <end>"</end>
     </context>
 
-    <context id="string" style-ref="string" end-at-line-end="true">
+    <context id="string" style-ref="string" class="string" end-at-line-end="true">
       <start>"</start>
       <end>"</end>
       <include>
@@ -49,17 +50,17 @@
       </include>
     </context>
 
-    <context id="char-literal" style-ref="string" end-at-line-end="true">
+    <context id="char-literal" style-ref="string" class="string" end-at-line-end="true">
       <start>'</start>
       <end>'</end>
     </context>
 
-    <context id="pragma" style-ref="pragma">
+    <context id="pragma" style-ref="pragma" class="preprocessor">
       <start>\{</start>
       <end>}</end>
     </context>
 
-    <context id="number" style-ref="number">
+    <context id="number" style-ref="number" class="number">
       <match extended="true">
         \b(?:
           0[xX][0-9A-Fa-f][0-9A-Fa-f_]* |
@@ -70,12 +71,12 @@
       </match>
     </context>
 
-    <context id="boolean" style-ref="boolean">
+    <context id="boolean" style-ref="boolean" class="boolean">
       <keyword>true</keyword>
       <keyword>false</keyword>
     </context>
 
-    <context id="keyword" style-ref="keyword">
+    <context id="keyword" style-ref="keyword" class="keyword">
       <keyword>addr</keyword>
       <keyword>and</keyword>
       <keyword>as</keyword>
@@ -142,6 +143,89 @@
       <keyword>while</keyword>
       <keyword>xor</keyword>
       <keyword>yield</keyword>
+    </context>
+
+    <context id="builtin-type" style-ref="type" class="type">
+      <keyword>any</keyword>
+      <keyword>array</keyword>
+      <keyword>auto</keyword>
+      <keyword>bool</keyword>
+      <keyword>byte</keyword>
+      <keyword>char</keyword>
+      <keyword>cchar</keyword>
+      <keyword>cdouble</keyword>
+      <keyword>cfloat</keyword>
+      <keyword>cint</keyword>
+      <keyword>clong</keyword>
+      <keyword>clongdouble</keyword>
+      <keyword>clonglong</keyword>
+      <keyword>cschar</keyword>
+      <keyword>cshort</keyword>
+      <keyword>csize</keyword>
+      <keyword>csize_t</keyword>
+      <keyword>cstring</keyword>
+      <keyword>cstringArray</keyword>
+      <keyword>cuchar</keyword>
+      <keyword>cuint</keyword>
+      <keyword>culong</keyword>
+      <keyword>culonglong</keyword>
+      <keyword>cushort</keyword>
+      <keyword>float</keyword>
+      <keyword>float32</keyword>
+      <keyword>float64</keyword>
+      <keyword>int</keyword>
+      <keyword>int8</keyword>
+      <keyword>int16</keyword>
+      <keyword>int32</keyword>
+      <keyword>int64</keyword>
+      <keyword>iterable</keyword>
+      <keyword>lent</keyword>
+      <keyword>Natural</keyword>
+      <keyword>openArray</keyword>
+      <keyword>pointer</keyword>
+      <keyword>Positive</keyword>
+      <keyword>range</keyword>
+      <keyword>Rune</keyword>
+      <keyword>seq</keyword>
+      <keyword>set</keyword>
+      <keyword>sink</keyword>
+      <keyword>string</keyword>
+      <keyword>typed</keyword>
+      <keyword>typedesc</keyword>
+      <keyword>uint</keyword>
+      <keyword>uint8</keyword>
+      <keyword>uint16</keyword>
+      <keyword>uint32</keyword>
+      <keyword>uint64</keyword>
+      <keyword>untyped</keyword>
+      <keyword>void</keyword>
+    </context>
+
+    <!-- Nim type names start with a capital. The style was declared and unused. -->
+    <context id="type-name" style-ref="type" class="type">
+      <match>\b[A-Z][A-Za-z0-9_]*\b</match>
+    </context>
+
+    <context id="operator" style-ref="operator" class="operator">
+      <match>(?:==|!=|&lt;=|&gt;=|\+=|-=|\*=|/=|:=|-&gt;|=&gt;|\.\.|[&lt;&gt;+\-*/])</match>
+    </context>
+
+    <context id="nim" class="no-spell-check">
+      <include>
+        <context ref="line-comment"/>
+        <context ref="block-comment"/>
+        <context ref="triple-string"/>
+        <context ref="raw-string"/>
+        <context ref="string"/>
+        <context ref="char-literal"/>
+        <context ref="pragma"/>
+        <context ref="number"/>
+        <context ref="boolean"/>
+        <context ref="keyword"/>
+        <context ref="builtin-type"/>
+        <context ref="type-name"/>
+        <context ref="operator"/>
+      </include>
     </context>
   </definitions>
 </language>

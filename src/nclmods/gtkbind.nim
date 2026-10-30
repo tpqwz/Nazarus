@@ -140,6 +140,10 @@ proc gtk_text_buffer_cut_clipboard(b, clip: pointer, editable: cint) {.importc, 
 proc gtk_text_buffer_paste_clipboard(b, clip, where: pointer, editable: cint) {.importc, dynlib: GtkLib.}
 proc gtk_text_buffer_get_modified(b: pointer): cint {.importc, dynlib: GtkLib.}
 proc gtk_text_buffer_set_modified(b: pointer, v: cint) {.importc, dynlib: GtkLib.}
+proc gtk_text_buffer_insert(b, it: pointer, text: cstring, n: cint) {.importc, dynlib: GtkLib.}
+proc gtk_text_buffer_delete(b, a, c: pointer) {.importc, dynlib: GtkLib.}
+proc gtk_text_buffer_begin_user_action(b: pointer) {.importc, dynlib: GtkLib.}
+proc gtk_text_buffer_end_user_action(b: pointer) {.importc, dynlib: GtkLib.}
 proc gtk_scrolled_window_new(h, v: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gtk_scrolled_window_set_policy(s: pointer, h, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_scrolled_window_set_overlay_scrolling(s: pointer, v: cint) {.importc, dynlib: GtkLib.}
@@ -292,6 +296,11 @@ proc gtk_source_buffer_new(table: pointer): pointer {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_new_with_language(lang: pointer): pointer {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_set_language(b, lang: pointer) {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_set_highlight_syntax(b: pointer, v: cint) {.importc, dynlib: SvLib.}
+proc gtk_source_buffer_set_style_scheme(b, scheme: pointer) {.importc, dynlib: SvLib.}
+proc gtk_source_style_scheme_manager_get_default(): pointer {.importc, dynlib: SvLib.}
+proc gtk_source_style_scheme_manager_prepend_search_path(m: pointer, path: cstring) {.importc, dynlib: SvLib.}
+proc gtk_source_style_scheme_manager_force_rescan(m: pointer) {.importc, dynlib: SvLib.}
+proc gtk_source_style_scheme_manager_get_scheme(m: pointer, id: cstring): pointer {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_undo(b: pointer) {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_redo(b: pointer) {.importc, dynlib: SvLib.}
 proc gtk_source_buffer_can_undo(b: pointer): cint {.importc, dynlib: SvLib.}

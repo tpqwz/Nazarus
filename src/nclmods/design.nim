@@ -4,7 +4,8 @@
 
 type
   TDragKind = enum dkNone, dkMove, dkResize, dkMarquee
-  TDesignAlign* = enum daLeft, daRight, daTop, daBottom, daCenterH, daCenterV
+  TDesignAlign* = enum daLeft, daRight, daTop, daBottom, daCenterH, daCenterV,
+    daSameW, daSameH, daSameSize, daSpaceH, daSpaceV
   TDesignKey* = enum dkeyLeft, dkeyRight, dkeyUp, dkeyDown, dkeyDelete, dkeyEscape,
     dkeyCopy, dkeyCut, dkeyPaste
 
@@ -477,12 +478,100 @@ proc designSelectRect*(x, y, w, h: int, additive = false) =
       if s != dForm and s notin acc: acc.add(s)
   commitSelection(acc)
 
+proc raiseStacked(c: TControl) =
+  if headless: return
+  let laid = c.layoutChild()
+  if laid == nil: return
+  let win = gtk_widget_get_window(laid)
+  if win != nil: gdk_window_raise(win)
+
+proc restackChildren(parent: TWinControl) =
+  ## Raise siblings from back to front so the last control ends on top.
+  if headless: return
+  for c in parent.controls: raiseStacked(c)
+  if dHost != nil: dHost.raiseDesignOverlay()
+
+proc designOrder*(front: bool): int =
+  ## Move the selected controls in front of their siblings, or behind them.
+  ## The form stays where it is. The selection keeps its own order.
+  if dForm == nil: return 0
+  var parents: seq[TWinControl]
+  for s in dSels:
+    if s == dForm or not (s of TControl): continue
+    let p = TControl(s).parent
+    if p == nil: continue
+    var seen = false
+    for q in parents:
+      if q == p: seen = true
+    if not seen: parents.add(p)
+  for p in parents:
+    var stay, pick: seq[TControl]
+    for c in p.controls:
+      if c != dForm and c in dSels: pick.add(c)
+      else: stay.add(c)
+    if pick.len == 0: continue
+    if front: p.controls = stay & pick
+    else: p.controls = pick & stay
+    result += pick.len
+    restackChildren(p)
+  if result > 0:
+    redrawDesign()
+    if onDesignChange != nil: onDesignChange()
+
+proc hostSorted(roots: seq[TControl], horizontal: bool): seq[TControl] =
+  result = roots
+  for i in 1 .. result.high:
+    var j = i
+    while j > 0:
+      let a = hostRect(result[j - 1])
+      let b = hostRect(result[j])
+      let later = if horizontal: a.x > b.x or (a.x == b.x and a.y > b.y)
+                  else: a.y > b.y or (a.y == b.y and a.x > b.x)
+      if not later: break
+      let tmp = result[j - 1]
+      result[j - 1] = result[j]
+      result[j] = tmp
+      dec j
+
+proc spaceRoots(roots: seq[TControl], horizontal: bool): int =
+  ## Equal gaps between the controls. The first and the last stay put.
+  if roots.len < 3: return 0
+  let ordered = hostSorted(roots, horizontal)
+  var along = 0
+  for c in ordered:
+    if horizontal: along += c.width else: along += c.height
+  let a = hostRect(ordered[0])
+  let b = hostRect(ordered[^1])
+  let span = if horizontal: (b.x + b.w) - a.x else: (b.y + b.h) - a.y
+  let gaps = ordered.len - 1
+  let gap = (span - along) div gaps
+  var extra = span - along - gap * gaps
+  var cursor = if horizontal: a.x else: a.y
+  for i, c in ordered:
+    let r = hostRect(c)
+    if horizontal: c.left = c.left + cursor - r.x
+    else: c.top = c.top + cursor - r.y
+    if horizontal: cursor += c.width else: cursor += c.height
+    if i < ordered.high:
+      cursor += gap
+      if extra > 0:
+        cursor += 1
+        dec extra
+  roots.len
+
 proc designAlign*(edge: TDesignAlign): int =
   ## Line the selected controls up with the one the inspector shows.
   ## A stretched control (Align other than alNone) is left where layout put it.
   var roots: seq[TControl]
   for c in selectionRoots():
     if c.align == alNone: roots.add(c)
+  if edge in {daSpaceH, daSpaceV}:
+    result = spaceRoots(roots, edge == daSpaceH)
+    if result == 0: return
+    redrawDesign()
+    if onDesignSelect != nil: onDesignSelect(dSel)
+    if onDesignChange != nil: onDesignChange()
+    return
   if roots.len < 2: return 0
   var refc = roots[0]
   if dSel of TControl:
@@ -499,6 +588,12 @@ proc designAlign*(edge: TDesignAlign): int =
     of daBottom: c.top = c.top + (rr.y + rr.h) - (r.y + r.h)
     of daCenterH: c.left = c.left + (rr.x + rr.w div 2) - (r.x + r.w div 2)
     of daCenterV: c.top = c.top + (rr.y + rr.h div 2) - (r.y + r.h div 2)
+    of daSameW: c.width = rr.w
+    of daSameH: c.height = rr.h
+    of daSameSize:
+      c.width = rr.w
+      c.height = rr.h
+    of daSpaceH, daSpaceV: discard
   result = roots.len
   redrawDesign()
   if onDesignSelect != nil: onDesignSelect(dSel)

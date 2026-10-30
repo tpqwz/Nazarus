@@ -83,6 +83,8 @@ type
     fVisible: bool
     fEnabled: bool
     fAlign: TAlign
+    ## Column width kept for alLeft and alRight while a narrow layout paints another width.
+    fSideSpan: int
     fAnchors: set[TAnchorKind]
     fColor: TColor
     fParentColor: bool
@@ -115,6 +117,11 @@ type
     extra: pointer
     menuBar: pointer
     layoutKind: TLayoutKind
+    ## Stack alLeft, alRight, and alClient when the client is narrower than BreakWidth.
+    fResponsive: bool
+    fBreakWidth: int
+    ## True after the last layout stacked the side-by-side band.
+    fStacked: bool
     layouting: bool
     designOverlay: pointer
     lastClientW, lastClientH: int
@@ -142,6 +149,8 @@ type
     fText: string
     fReadOnly: bool
     fPassword: bool
+    fCue: string
+    onReturn*: TNotifyEvent
   TMemo* = ref object of TWinControl
     fText: string
     fReadOnly: bool
@@ -240,11 +249,19 @@ type
   TSaveDialog* = ref object of TOpenDialog
   TScopeRail* = object
     openLine*, closeLine*, depth*: int
+  TJumpMark* = object
+    ## column 0 is the lane nearest the code. backward is a continue.
+    fromLine*, toLine*, column*: int
+    backward*: bool
   TSourceEditor* = ref object of TWinControl
     buffer: pointer
     mute: bool
     gutter: pointer
     rails: seq[TScopeRail]
+    jumps: seq[TJumpMark]
+    jumpCols: int
+    jumpLine: int
+    jumpCol: int
     onCaret*: proc(line: int) {.closure.}
   TApplication* = ref object
     title*: string
@@ -430,10 +447,16 @@ proc initControl(self: TControl, cls: string, owner: TComponent) =
   self.fFont.color = clWindowText
   self.fWidth = 80
   self.fHeight = 24
+  if self of TWinControl:
+    TWinControl(self).fBreakWidth = 640
 
 proc left*(self: TControl): int = self.fLeft
 proc top*(self: TControl): int = self.fTop
-proc width*(self: TControl): int = self.fWidth
+proc width*(self: TControl): int =
+  ## alLeft and alRight report the column, including while a narrow layout
+  ## paints that column as a full-width band.
+  if self.fAlign in {alLeft, alRight} and self.fSideSpan > 0: self.fSideSpan
+  else: self.fWidth
 proc height*(self: TControl): int = self.fHeight
 proc align*(self: TControl): TAlign = self.fAlign
 proc visible*(self: TControl): bool = self.fVisible
@@ -595,6 +618,16 @@ proc designDocument(self: TWinControl, c: TControl): bool =
   ## Align and anchors apply when the program runs, not while it is being drawn.
   c of TForm and c.designing and self of TScrollBox
 
+proc columnSpan(c: TControl): int =
+  ## Width an alLeft or alRight control keeps across a stack.
+  ## The painted width changes while the band is stacked. This one does not.
+  if c.fAlign in {alLeft, alRight}:
+    if c.fSideSpan <= 0:
+      c.fSideSpan = max(0, c.fWidth)
+    if c.fSideSpan > 0:
+      return c.fSideSpan
+  max(0, c.fWidth)
+
 proc doAlign(self: TWinControl, cw, ch: int) =
   var x = 0
   var y = 0
@@ -612,24 +645,54 @@ proc doAlign(self: TWinControl, cw, ch: int) =
     bottom -= bh
     if bottom < y: bottom = y
     c.setBoundsInternal(x, bottom, max(0, right - x), bh)
-  for c in self.controls:
-    if self.designDocument(c): continue
-    if not c.fVisible or c.fAlign != alLeft: continue
-    c.setBoundsInternal(x, y, c.fWidth, max(0, bottom - y))
-    x += c.fWidth
-  for c in self.controls:
-    if self.designDocument(c): continue
-    if not c.fVisible or c.fAlign != alRight: continue
-    let bw = c.fWidth
-    right -= bw
-    if right < x: right = x
-    c.setBoundsInternal(right, y, bw, max(0, bottom - y))
-  for c in self.controls:
-    if self.designDocument(c): continue
-    if not c.fVisible or c.fAlign != alClient: continue
-    c.setBoundsInternal(x, y, max(0, right - x), max(0, bottom - y))
-    x = right
-    y = bottom
+  # The design surface keeps the wide columns. Stacking applies when the program runs.
+  let stack = not self.designing and self.fResponsive and self.fBreakWidth > 0 and cw < self.fBreakWidth
+  self.fStacked = stack
+  if stack:
+    var bands: seq[tuple[ctrl: TControl, band: int, client: bool]]
+    var fixed = 0
+    var clients = 0
+    for c in self.controls:
+      if self.designDocument(c): continue
+      if not c.fVisible or c.fAlign notin {alLeft, alRight, alClient}: continue
+      if c.fAlign == alClient:
+        bands.add((c, 0, true))
+        inc clients
+      else:
+        let band = c.columnSpan()
+        bands.add((c, band, false))
+        fixed += band
+    let room = max(0, bottom - y)
+    let clientH = if clients > 0: max(0, room - fixed) else: 0
+    let full = max(0, right - x)
+    var gave = false
+    for b in bands:
+      var h = b.band
+      if b.client:
+        h = if not gave: clientH else: 0
+        gave = true
+      b.ctrl.setBoundsInternal(x, y, full, h)
+      y += h
+  else:
+    for c in self.controls:
+      if self.designDocument(c): continue
+      if not c.fVisible or c.fAlign != alLeft: continue
+      let span = c.columnSpan()
+      c.setBoundsInternal(x, y, span, max(0, bottom - y))
+      x += span
+    for c in self.controls:
+      if self.designDocument(c): continue
+      if not c.fVisible or c.fAlign != alRight: continue
+      let bw = c.columnSpan()
+      right -= bw
+      if right < x: right = x
+      c.setBoundsInternal(right, y, bw, max(0, bottom - y))
+    for c in self.controls:
+      if self.designDocument(c): continue
+      if not c.fVisible or c.fAlign != alClient: continue
+      c.setBoundsInternal(x, y, max(0, right - x), max(0, bottom - y))
+      x = right
+      y = bottom
 
 proc doRow(self: TWinControl, cw, ch: int) =
   var x = 4
@@ -875,7 +938,10 @@ proc `top=`*(self: TControl, v: int) =
   elif self.fParent != nil and not self.fParent.layouting: self.fParent.layoutChildren()
 
 proc `width=`*(self: TControl, v: int) =
-  self.fWidth = max(0, v)
+  let n = max(0, v)
+  self.fWidth = n
+  if self.fAlign in {alLeft, alRight}:
+    self.fSideSpan = n
   self.placeWidget()
   self.relayoutFrom()
 
@@ -889,12 +955,29 @@ proc setBounds*(self: TControl, x, y, w, h: int) =
   self.fTop = y
   self.fWidth = max(0, w)
   self.fHeight = max(0, h)
+  if self.fAlign in {alLeft, alRight}:
+    self.fSideSpan = self.fWidth
   self.placeWidget()
   self.relayoutFrom()
 
 proc `align=`*(self: TControl, v: TAlign) =
   self.fAlign = v
+  if v in {alLeft, alRight}:
+    if self.fSideSpan <= 0:
+      self.fSideSpan = max(0, self.fWidth)
+  else:
+    self.fSideSpan = 0
   if self.fParent != nil: self.fParent.layoutChildren()
+
+proc responsive*(self: TWinControl): bool = self.fResponsive
+proc `responsive=`*(self: TWinControl, v: bool) =
+  self.fResponsive = v
+  if not self.layouting: self.layoutChildren()
+
+proc breakWidth*(self: TWinControl): int = self.fBreakWidth
+proc `breakWidth=`*(self: TWinControl, v: int) =
+  self.fBreakWidth = max(0, v)
+  if not self.layouting: self.layoutChildren()
 
 proc `anchors=`*(self: TControl, v: set[TAnchorKind]) = self.fAnchors = v
 
@@ -1058,7 +1141,7 @@ proc registerCoreProps() =
   registerClass("TControl", "TComponent")
   propInt("TControl", "Left", proc(c: TComponent): int = TControl(c).fLeft, proc(c: TComponent, v: int) = TControl(c).left = v)
   propInt("TControl", "Top", proc(c: TComponent): int = TControl(c).fTop, proc(c: TComponent, v: int) = TControl(c).top = v)
-  propInt("TControl", "Width", proc(c: TComponent): int = TControl(c).fWidth, proc(c: TComponent, v: int) = TControl(c).width = v)
+  propInt("TControl", "Width", proc(c: TComponent): int = TControl(c).width, proc(c: TComponent, v: int) = TControl(c).width = v)
   propInt("TControl", "Height", proc(c: TComponent): int = TControl(c).fHeight, proc(c: TComponent, v: int) = TControl(c).height = v)
   propEnum("TControl", "Align", ["alNone", "alTop", "alBottom", "alLeft", "alRight", "alClient"],
     proc(c: TComponent): string = $TControl(c).fAlign,
@@ -1111,6 +1194,12 @@ proc registerCoreProps() =
   propEvent("TControl", "OnDblClick", "notify")
 
   registerClass("TWinControl", "TControl")
+  propBool("TWinControl", "Responsive",
+    proc(c: TComponent): bool = TWinControl(c).fResponsive,
+    proc(c: TComponent, v: bool) = TWinControl(c).responsive = v)
+  propInt("TWinControl", "BreakWidth",
+    proc(c: TComponent): int = TWinControl(c).fBreakWidth,
+    proc(c: TComponent, v: int) = TWinControl(c).breakWidth = v)
 
 proc fillRect*(canvas: TCanvas, x, y, w, h: int, color: TColor) =
   if canvas == nil or canvas.cr == nil: return

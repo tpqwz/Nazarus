@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<style-scheme id="nazarus" _name="Nazarus" version="1.0">
+  <author>Nazarus</author>
+  <_description>Light colors for the Nim code view</_description>
+
+  <style name="text"                        foreground="#1c1b19" background="#ffffff"/>
+  <style name="selection"                   foreground="#ffffff" background="#1d4e89"/>
+  <style name="cursor"                      foreground="#1c1b19"/>
+  <style name="current-line"                background="#f6f4ef"/>
+  <style name="line-numbers"                foreground="#8a8680" background="#f3f2ef"/>
+  <style name="current-line-number"         foreground="#1d4e89" background="#f3f2ef" bold="true"/>
+  <style name="right-margin"                foreground="#e4e1db" background="#e4e1db"/>
+  <style name="draw-spaces"                 foreground="#d9d6d0"/>
+  <style name="bracket-match"               foreground="#1c1b19" background="#d7e4c8" bold="true"/>
+  <style name="bracket-mismatch"            foreground="#ffffff" background="#a32020" bold="true"/>
+  <style name="search-match"                background="#ffe08a"/>
+
+  <style name="def:comment"                 foreground="#6d6a64" italic="true"/>
+  <style name="def:keyword"                 foreground="#1d4e89" bold="true"/>
+  <style name="def:type"                    foreground="#1b6b3a" bold="true"/>
+  <style name="def:string"                  foreground="#8a3d12"/>
+  <style name="def:number"                  foreground="#8a4b08"/>
+  <style name="def:boolean"                 foreground="#6b3fa0"/>
+  <style name="def:constant"                foreground="#6b3fa0"/>
+  <style name="def:preprocessor"            foreground="#7a3e78"/>
+  <style name="def:operator"                foreground="#5c5346"/>
+  <style name="def:special-char"            foreground="#8a4b08"/>
+  <style name="def:identifier"              foreground="#1c1b19"/>
+  <style name="def:statement"               foreground="#1d4e89" bold="true"/>
+</style-scheme>

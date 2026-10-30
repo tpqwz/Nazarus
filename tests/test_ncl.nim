@@ -57,6 +57,125 @@ panel.visible = true
 if button.top != 40 or button.height != 80:
   fail("restored panel")
 
+let plain = TForm.new()
+plain.width = 800
+plain.height = 300
+let plainSide = TPanel.new(plain)
+plainSide.parent = plain
+plainSide.bevel = bvNone
+plainSide.align = alLeft
+plainSide.width = 100
+let plainPage = TPanel.new(plain)
+plainPage.parent = plain
+plainPage.bevel = bvNone
+plainPage.align = alClient
+plain.width = 300
+if plainPage.left != 100 or plainSide.width != 100:
+  fail("plain stacked " & $plainPage.left & " " & $plainSide.width)
+
+let stackForm = TForm.new()
+stackForm.name = "Box"
+stackForm.width = 800
+stackForm.height = 420
+stackForm.responsive = true
+stackForm.breakWidth = 700
+let bar = TPanel.new(stackForm)
+bar.name = "Bar"
+bar.bevel = bvNone
+bar.align = alTop
+bar.height = 36
+bar.parent = stackForm
+let side = TPanel.new(stackForm)
+side.name = "Side"
+side.bevel = bvNone
+side.align = alLeft
+side.width = 180
+side.parent = stackForm
+let mark = TButton.new(stackForm)
+mark.name = "Mark"
+mark.align = alClient
+mark.parent = side
+let split = TSplitter.new(stackForm)
+split.name = "Split"
+split.width = 6
+split.parent = stackForm
+let page = TPanel.new(stackForm)
+page.name = "Page"
+page.bevel = bvNone
+page.align = alClient
+page.parent = stackForm
+let foot = TPanel.new(stackForm)
+foot.name = "Foot"
+foot.bevel = bvNone
+foot.align = alBottom
+foot.height = 24
+foot.parent = stackForm
+if bar.top != 0 or bar.height != 36 or bar.width != 800: fail("bar wide")
+if foot.height != 24 or foot.top != 396: fail("foot wide")
+if side.left != 0 or side.width != 180 or side.height != 360: fail("side wide " & $side.width & "x" & $side.height)
+if mark.width != 180: fail("mark wide " & $mark.width)
+if split.left != 180 or split.width != 6: fail("split wide")
+if page.left != 186 or page.width != 614 or page.top != 36: fail("page wide " & $page.left & "," & $page.top & " " & $page.width)
+let rightPane = TPanel.new(stackForm)
+rightPane.name = "Right"
+rightPane.bevel = bvNone
+rightPane.align = alRight
+rightPane.width = 50
+rightPane.parent = stackForm
+if rightPane.width != 50 or rightPane.left != 750: fail("right wide " & $rightPane.left)
+stackForm.width = 500
+if side.width != 180 or side.height != 180 or side.top != 36: fail("side stack " & $side.top & " " & $side.width & "x" & $side.height)
+if mark.width != 500 or mark.height != 180: fail("mark stack " & $mark.width & "x" & $mark.height)
+if split.top != 216 or split.height != 6: fail("split stack " & $split.top)
+if page.left != 0 or page.top != 222 or page.width != 500: fail("page stack " & $page.left & "," & $page.top & " " & $page.width)
+if rightPane.top != 222 + page.height or rightPane.height != 50 or rightPane.width != 50:
+  fail("right stack " & $rightPane.top & " h" & $rightPane.height)
+if bar.top != 0 or bar.height != 36 or foot.top != 396: fail("chrome stack")
+let stacked = saveNfm(stackForm)
+if "Responsive = True" notin stacked or "BreakWidth = 700" notin stacked: fail("responsive streamed")
+if "Width = 180" notin stacked: fail("column not kept")
+side.width = 140
+if side.height != 140 or side.width != 140: fail("band resize " & $side.width & "x" & $side.height)
+side.visible = false
+split.visible = false
+rightPane.visible = false
+if page.top != 36 or page.left != 0: fail("hidden stack " & $page.left & "," & $page.top)
+side.visible = true
+split.visible = true
+rightPane.visible = true
+stackForm.width = 800
+if side.width != 140 or page.left != 146 or rightPane.left != 750 or rightPane.width != 50:
+  fail("restored columns " & $side.width & " page " & $page.left & " right " & $rightPane.left)
+if mark.width != 140: fail("mark restored " & $mark.width)
+let againBox = TForm.new()
+loadNfm(againBox, stacked)
+if not againBox.responsive or againBox.breakWidth != 700: fail("responsive reload")
+againBox.width = 800
+let side2 = TPanel(againBox.findComponent("Side"))
+let page2 = TPanel(againBox.findComponent("Page"))
+if side2 == nil or page2 == nil or side2.width != 180 or page2.left != 186:
+  fail("reloaded columns")
+
+let hostR = TScrollBox.new()
+let doc = TForm.new()
+doc.width = 800
+doc.height = 300
+doc.responsive = true
+doc.breakWidth = 900
+let docSide = TPanel.new(doc)
+docSide.bevel = bvNone
+docSide.align = alLeft
+docSide.width = 160
+docSide.parent = doc
+let docPage = TPanel.new(doc)
+docPage.bevel = bvNone
+docPage.align = alClient
+docPage.parent = doc
+enableDesign(doc, hostR)
+doc.width = 320
+if docPage.left != 160 or docSide.width != 160:
+  fail("design stacked " & $docPage.left & " " & $docSide.width)
+
 let menu = TMainMenu.new(form)
 form.menu = menu
 discard menu.add("&File")
@@ -67,6 +186,7 @@ let timer = TTimer.new(form)
 timer.interval = 250
 
 let nfm = saveNfm(form)
+if "Responsive" in nfm or "BreakWidth" in nfm: fail("responsive default streamed")
 let loaded = TForm.new()
 loadNfm(loaded, nfm)
 if loaded.name != "Form1" or loaded.caption != "Hello": fail("form props")
@@ -202,6 +322,66 @@ if ba.top != 90: fail("align across parent " & $ba.top)
 if inner.top != 10: fail("align ref moved")
 
 ba.setBounds(10, 10, 40, 20)
+bb.setBounds(80, 30, 50, 25)
+selectComponent(ba)
+designToggle(bb)
+if designAlign(daSameW) < 2: fail("same width ran")
+if ba.width != 50 or ba.height != 20 or ba.left != 10: fail("same width " & $ba.width)
+if bb.width != 50: fail("same width ref")
+ba.setBounds(10, 10, 40, 20)
+bb.setBounds(80, 30, 50, 25)
+selectComponent(ba)
+designToggle(bb)
+discard designAlign(daSameH)
+if ba.height != 25 or ba.width != 40: fail("same height " & $ba.height)
+ba.setBounds(10, 10, 40, 20)
+bb.setBounds(80, 30, 50, 25)
+selectComponent(ba)
+designToggle(bb)
+discard designAlign(daSameSize)
+if ba.width != 50 or ba.height != 25: fail("same size")
+let stuck = TButton.new(dform)
+stuck.parent = dform
+stuck.align = alLeft
+stuck.width = 30
+stuck.height = 40
+ba.setBounds(10, 10, 40, 20)
+bb.setBounds(80, 30, 50, 25)
+selectComponent(bb)
+designToggle(ba)
+designToggle(stuck)
+discard designAlign(daSameW)
+if stuck.width != 30: fail("aligned control resized")
+if ba.width != 40 or bb.width != 40: fail("size ref " & $ba.width & " " & $bb.width)
+let bc = TButton.new(dform)
+bc.parent = dform
+ba.setBounds(10, 10, 20, 16)
+bb.setBounds(40, 10, 20, 16)
+bc.setBounds(100, 10, 20, 16)
+selectComponent(ba)
+designToggle(bb)
+if designAlign(daSpaceH) != 0: fail("space needs three")
+designToggle(bc)
+if designAlign(daSpaceH) < 3: fail("space h ran")
+if ba.left != 10 or bb.left != 55 or bc.left != 100: fail("space h " & $ba.left & "," & $bb.left & "," & $bc.left)
+ba.setBounds(0, 0, 10, 10)
+bb.setBounds(20, 0, 10, 10)
+bc.setBounds(31, 0, 10, 10)
+selectComponent(ba)
+designToggle(bb)
+designToggle(bc)
+discard designAlign(daSpaceH)
+if ba.left != 0 or bb.left != 16 or bc.left != 31: fail("space remainder " & $bb.left)
+ba.setBounds(10, 10, 20, 10)
+bb.setBounds(10, 40, 20, 10)
+bc.setBounds(10, 80, 20, 10)
+selectComponent(ba)
+designToggle(bb)
+designToggle(bc)
+discard designAlign(daSpaceV)
+if ba.top != 10 or bb.top != 45 or bc.top != 80: fail("space v " & $ba.top & "," & $bb.top & "," & $bc.top)
+
+ba.setBounds(10, 10, 40, 20)
 selectComponent(ba)
 if not designKey(dkeyRight, false) or ba.left != 11: fail("nudge")
 if not designKey(dkeyRight, true) or ba.left != 19: fail("nudge grid")
@@ -322,5 +502,44 @@ let back = designSelected()
 if back == nil or back.name != cutName: fail("cut name " & (if back == nil: "nil" else: back.name))
 if TControl(back).left != cutLeft + 8 or TControl(back).caption != "Two":
   fail("cut paste")
+
+let oa = TButton.new(dform)
+oa.parent = dform
+oa.caption = "OA"
+let ob = TButton.new(dform)
+ob.parent = dform
+ob.caption = "OB"
+let oc = TButton.new(dform)
+oc.parent = dform
+oc.caption = "OC"
+
+proc threeOrder(): seq[TControl] =
+  for c in dform.childControls:
+    if c == oa or c == ob or c == oc: result.add(c)
+
+selectComponent(oa)
+if designOrder(true) != 1: fail("front count")
+var got = threeOrder()
+if got.len != 3 or got[0] != ob or got[1] != oc or got[2] != oa: fail("front order")
+selectComponent(oa)
+if designOrder(false) != 1: fail("back count")
+got = threeOrder()
+if got[0] != oa or got[1] != ob or got[2] != oc: fail("back order")
+selectComponent(ob)
+designToggle(oc)
+if designOrder(false) != 2: fail("back pair count")
+got = threeOrder()
+if got[0] != ob or got[1] != oc or got[2] != oa: fail("back pair")
+selectComponent(dform)
+if designOrder(true) != 0: fail("form stays")
+let deepBox = TPanel.new(dform)
+deepBox.parent = dform
+let deep = TButton.new(dform)
+deep.parent = deepBox
+deep.caption = "Deep"
+selectComponent(deep)
+if designOrder(true) != 1 or deep.parent != deepBox: fail("inner order")
+selectComponent(clipTimer)
+if designOrder(true) != 0: fail("timer order")
 
 echo "ok"

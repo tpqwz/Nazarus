@@ -67,6 +67,12 @@ proc onEntryChanged(widget: pointer, data: pointer) {.cdecl.} =
   if ed.designing: return
   if ed.onChange != nil: guard proc() = ed.onChange(ed)
 
+proc onEntryActivate(widget: pointer, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TEdit) or TEdit(c).designing: return
+  let ed = TEdit(c)
+  if ed.onReturn != nil: guard proc() = ed.onReturn(ed)
+
 proc onComboChanged(widget: pointer, data: pointer) {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TComboBox) or TComboBox(c).refreshing: return
@@ -273,6 +279,11 @@ proc `password=`*(self: TEdit, v: bool) =
   self.fPassword = v
   if self.handle != nil: gtk_entry_set_visibility(self.handle, if v: 0 else: 1)
 
+proc cue*(self: TEdit): string = self.fCue
+proc `cue=`*(self: TEdit, v: string) =
+  self.fCue = v
+  if self.handle != nil: gtk_entry_set_placeholder_text(self.handle, v.cstring)
+
 proc pushEdit(self: TControl) =
   let ed = TEdit(self)
   if ed.handle == nil: return
@@ -280,11 +291,13 @@ proc pushEdit(self: TControl) =
   gtk_entry_set_text(ed.handle, ed.fText.cstring)
   gtk_editable_set_editable(ed.handle, if ed.fReadOnly: 0 else: 1)
   gtk_entry_set_visibility(ed.handle, if ed.fPassword: 0 else: 1)
+  gtk_entry_set_placeholder_text(ed.handle, ed.fCue.cstring)
   ed.refreshing = false
 
 proc createEdit(self: TControl) =
   self.handle = gtk_entry_new()
   connect(self.handle, "changed", cast[pointer](onEntryChanged), self.liveId)
+  connect(self.handle, "activate", cast[pointer](onEntryActivate), self.liveId)
   pushEdit(self)
 
 proc new*(_: typedesc[TEdit], owner: TComponent = nil): TEdit =
@@ -866,12 +879,14 @@ proc onSplitPress(widget, ev, data: pointer): cint {.cdecl.} =
   sp.sibling = sp.prevSplitSibling()
   if sp.sibling == nil: return 0
   sp.dragging = true
-  if sp.fAlign in {alTop, alBottom}:
+  let stacked = sp.fParent != nil and sp.fParent.fStacked and sp.fAlign in {alLeft, alRight}
+  if sp.fAlign in {alTop, alBottom} or stacked:
     sp.dragOrigin = int(y)
-    sp.siblingOrigin = sp.sibling.fHeight
+    if stacked: sp.siblingOrigin = sp.sibling.columnSpan()
+    else: sp.siblingOrigin = sp.sibling.fHeight
   else:
     sp.dragOrigin = int(x)
-    sp.siblingOrigin = sp.sibling.fWidth
+    sp.siblingOrigin = sp.sibling.columnSpan()
   1
 
 proc onSplitMotion(widget, ev, data: pointer): cint {.cdecl.} =
@@ -881,10 +896,14 @@ proc onSplitMotion(widget, ev, data: pointer): cint {.cdecl.} =
   if not sp.dragging or sp.sibling == nil: return 0
   var x, y: cdouble
   discard gdk_event_get_coords(ev, addr x, addr y)
+  let stacked = sp.fParent != nil and sp.fParent.fStacked and sp.fAlign in {alLeft, alRight}
   if sp.fAlign in {alTop, alBottom}:
     let d = int(y) - sp.dragOrigin
     let h = if sp.fAlign == alBottom: sp.siblingOrigin - d else: sp.siblingOrigin + d
     sp.sibling.height = max(20, h)
+  elif stacked:
+    let d = int(y) - sp.dragOrigin
+    sp.sibling.width = max(20, sp.siblingOrigin + d)
   else:
     let d = int(x) - sp.dragOrigin
     let w = if sp.fAlign == alRight: sp.siblingOrigin - d else: sp.siblingOrigin + d
@@ -1752,6 +1771,8 @@ proc `borderStyle=`*(self: TForm, v: TFormBorderStyle) =
 
 var nimLang: pointer
 var langTried = false
+var nimSchemePtr: pointer
+var schemeTried = false
 
 proc nimLanguage(): pointer =
   if langTried: return nimLang
@@ -1762,6 +1783,19 @@ proc nimLanguage(): pointer =
   nimLang = gtk_source_language_manager_get_language(mgr, "nim".cstring)
   if nimLang == nil:
     stderr.writeLine("Nazarus: no Nim syntax spec in " & NazarusShare)
+  nimLang
+
+proc nimScheme(): pointer =
+  ## The usual schemes leave def:keyword and def:string unset, so Nim stayed plain.
+  if schemeTried: return nimSchemePtr
+  schemeTried = true
+  let mgr = gtk_source_style_scheme_manager_get_default()
+  gtk_source_style_scheme_manager_prepend_search_path(mgr, NazarusShare.cstring)
+  gtk_source_style_scheme_manager_force_rescan(mgr)
+  nimSchemePtr = gtk_source_style_scheme_manager_get_scheme(mgr, "nazarus".cstring)
+  if nimSchemePtr == nil:
+    stderr.writeLine("Nazarus: no style scheme in " & NazarusShare)
+  nimSchemePtr
 
 proc text*(self: TSourceEditor): string =
   if self.buffer == nil: "" else: textOfBuffer(self.buffer)
@@ -1816,8 +1850,109 @@ proc editPaste*(self: TSourceEditor) =
 proc focus*(self: TEdit) =
   if self.handle != nil: gtk_widget_grab_focus(self.handle)
 
-proc gotoLine*(self: TSourceEditor, line: int, column = 1) =
+proc insertChars*(self: TSourceEditor): int =
+  ## 0-based character offset of the caret. 0 when the editor has no buffer.
+  if self.buffer == nil: return 0
+  let mark = gtk_text_buffer_get_insert(self.buffer)
+  if mark == nil: return 0
+  var it: array[32, int64]
+  gtk_text_buffer_get_iter_at_mark(self.buffer, addr it[0], mark)
+  int(gtk_text_iter_get_offset(addr it[0]))
+
+proc selectionChars*(self: TSourceEditor): tuple[a, b: int, any: bool] =
+  ## Character offsets of the selection, low to high. `any` is false when the
+  ## caret is only a point, and then both ends are that point.
+  if self.buffer == nil: return (0, 0, false)
+  var s, e: array[32, int64]
+  if gtk_text_buffer_get_selection_bounds(self.buffer, addr s[0], addr e[0]) == 0:
+    let c = self.insertChars()
+    return (c, c, false)
+  (int(gtk_text_iter_get_offset(addr s[0])), int(gtk_text_iter_get_offset(addr e[0])), true)
+
+proc lineCount*(self: TSourceEditor): int =
+  if self.buffer == nil: return 0
+  int(gtk_text_buffer_get_line_count(self.buffer))
+
+proc scrollCaret(self: TSourceEditor, it: pointer) =
+  if self.inner == nil or it == nil: return
+  gtk_text_view_scroll_to_iter(self.inner, it, 0.05, 1, 0.0, 0.25)
+  gtk_widget_grab_focus(self.inner)
+
+proc revealChar*(self: TSourceEditor, charIndex: int) =
+  ## Put this character at the left edge. The caret stays where it is.
+  ## Pinning the caret works for a short match. On a line longer than the
+  ## view it hides the start, which is where a comment mark sits.
+  if self.buffer == nil or self.inner == nil: return
+  var it: array[32, int64]
+  gtk_text_buffer_get_iter_at_offset(self.buffer, addr it[0], cint(max(0, charIndex)))
+  gtk_text_view_scroll_to_iter(self.inner, addr it[0], 0.0, 1, 0.0, 0.25)
+
+proc selectCharRange*(self: TSourceEditor, startChar, endChar: int, caretAtStart = false) =
+  ## Select [startChar, endChar). The caret sits at the end, so the next
+  ## search starts after this match. A comment toggle parks it at the start,
+  ## because a scroll onto the end of a long line hides the mark.
   if self.buffer == nil: return
+  var a = startChar
+  var b = endChar
+  if a < 0: a = 0
+  if b < a: b = a
+  var s, e: array[32, int64]
+  gtk_text_buffer_get_iter_at_offset(self.buffer, addr s[0], cint(a))
+  gtk_text_buffer_get_iter_at_offset(self.buffer, addr e[0], cint(b))
+  if caretAtStart:
+    gtk_text_buffer_select_range(self.buffer, addr s[0], addr e[0])
+    self.scrollCaret(addr s[0])
+  else:
+    gtk_text_buffer_select_range(self.buffer, addr e[0], addr s[0])
+    self.scrollCaret(addr e[0])
+
+proc replaceCharRange*(self: TSourceEditor, startChar, endChar: int, text: string, scroll = true) =
+  ## Replace [startChar, endChar) as one undo step. The caret stays after the new text.
+  if self.buffer == nil: return
+  var a = startChar
+  var b = endChar
+  if a < 0: a = 0
+  if b < a: b = a
+  self.mute = true
+  gtk_text_buffer_begin_user_action(self.buffer)
+  try:
+    if a != b:
+      var s, e: array[32, int64]
+      gtk_text_buffer_get_iter_at_offset(self.buffer, addr s[0], cint(a))
+      gtk_text_buffer_get_iter_at_offset(self.buffer, addr e[0], cint(b))
+      gtk_text_buffer_delete(self.buffer, addr s[0], addr e[0])
+    var it: array[32, int64]
+    gtk_text_buffer_get_iter_at_offset(self.buffer, addr it[0], cint(a))
+    gtk_text_buffer_insert(self.buffer, addr it[0], text.cstring, -1)
+    gtk_text_buffer_place_cursor(self.buffer, addr it[0])
+    if scroll: self.scrollCaret(addr it[0])
+  finally:
+    gtk_text_buffer_end_user_action(self.buffer)
+    self.mute = false
+
+proc replaceWholeText*(self: TSourceEditor, text: string) =
+  ## Replace the buffer as one undo step and keep the caret near where it was.
+  if self.buffer == nil: return
+  let keep = self.insertChars()
+  self.mute = true
+  gtk_text_buffer_begin_user_action(self.buffer)
+  try:
+    var s, e: array[32, int64]
+    gtk_text_buffer_get_start_iter(self.buffer, addr s[0])
+    gtk_text_buffer_get_end_iter(self.buffer, addr e[0])
+    gtk_text_buffer_delete(self.buffer, addr s[0], addr e[0])
+    gtk_text_buffer_get_start_iter(self.buffer, addr s[0])
+    gtk_text_buffer_insert(self.buffer, addr s[0], text.cstring, -1)
+    var it: array[32, int64]
+    gtk_text_buffer_get_iter_at_offset(self.buffer, addr it[0], cint(max(0, keep)))
+    gtk_text_buffer_place_cursor(self.buffer, addr it[0])
+    self.scrollCaret(addr it[0])
+  finally:
+    gtk_text_buffer_end_user_action(self.buffer)
+    self.mute = false
+
+proc placeCaret(self: TSourceEditor, line, column: int) =
+  if self.buffer == nil or line < 1: return
   var it: array[32, int64]
   gtk_text_buffer_get_iter_at_line_offset(self.buffer, addr it[0],
     cint(max(0, line - 1)), cint(max(0, column - 1)))
@@ -1826,17 +1961,62 @@ proc gotoLine*(self: TSourceEditor, line: int, column = 1) =
     gtk_text_view_scroll_to_iter(self.inner, addr it[0], 0.05, 1, 0.0, 0.25)
     gtk_widget_grab_focus(self.inner)
 
-proc caretLine*(self: TSourceEditor): int =
-  ## 1-based insert line. 0 when the editor has no buffer.
-  if self.buffer == nil: return 0
+proc scrollEditorJump(data: pointer): cint {.cdecl.} =
+  ## The code page may have had no size when the jump was asked for.
+  ## Scroll again after GTK has shown it.
+  let c = recall(data)
+  if c != nil and c of TSourceEditor:
+    let ed = TSourceEditor(c)
+    ed.placeCaret(ed.jumpLine, ed.jumpCol)
+  0
+
+proc gotoLine*(self: TSourceEditor, line: int, column = 1) =
+  self.jumpLine = line
+  self.jumpCol = column
+  self.placeCaret(line, column)
+  if not headless:
+    discard g_timeout_add(0, cast[pointer](scrollEditorJump), cast[pointer](self.liveId))
+
+proc caretPlace(self: TSourceEditor, line, column: var int) =
+  line = 0
+  column = 0
+  if self.buffer == nil: return
   let mark = gtk_text_buffer_get_insert(self.buffer)
-  if mark == nil: return 0
+  if mark == nil: return
   var it: array[32, int64]
   gtk_text_buffer_get_iter_at_mark(self.buffer, addr it[0], mark)
-  int(gtk_text_iter_get_line(addr it[0])) + 1
+  line = int(gtk_text_iter_get_line(addr it[0])) + 1
+  column = int(gtk_text_iter_get_line_offset(addr it[0])) + 1
+
+proc caretLine*(self: TSourceEditor): int =
+  ## 1-based insert line. 0 when the editor has no buffer.
+  var line, column: int
+  self.caretPlace(line, column)
+  line
+
+proc caretColumn*(self: TSourceEditor): int =
+  ## 1-based character position of the caret on its line. 0 without a buffer.
+  var line, column: int
+  self.caretPlace(line, column)
+  column
+
+proc fitGutter(self: TSourceEditor) =
+  ## Rails keep their 54px when nothing jumps. Each jump lane adds 10px on the left.
+  if self.gutter == nil: return
+  let cols = min(6, max(0, self.jumpCols))
+  gtk_widget_set_size_request(self.gutter, cint(54 + cols * 10), 1)
 
 proc `scopeRails=`*(self: TSourceEditor, v: seq[TScopeRail]) =
   self.rails = v
+  if self.gutter != nil: gtk_widget_queue_draw(self.gutter)
+
+proc `jumpMarks=`*(self: TSourceEditor, v: seq[TJumpMark]) =
+  self.jumps = v
+  var cols = 0
+  for j in v:
+    if j.column + 1 > cols: cols = j.column + 1
+  self.jumpCols = cols
+  self.fitGutter()
   if self.gutter != nil: gtk_widget_queue_draw(self.gutter)
 
 proc gutterLineY(ed: TSourceEditor, line1: int): float =
@@ -1872,6 +2052,41 @@ proc onEditorMark(buf, iter, mark, data: pointer) {.cdecl.} =
   let line = int(gtk_text_iter_get_line(iter)) + 1
   guard proc() = ed.onCaret(line)
 
+proc paintJumps(ed: TSourceEditor, cr: pointer, h: float, caret: int, hot: bool) =
+  ## Arrow at the landing, pointing toward the code. Column 0 is the rightmost lane.
+  let cols = ed.jumpCols
+  if cols <= 0: return
+  for j in ed.jumps:
+    if j.column < 0 or j.column >= 6: continue
+    let isHot = caret == j.fromLine
+    if isHot != hot: continue
+    let y0 = gutterLineY(ed, j.fromLine)
+    let y1 = gutterLineY(ed, j.toLine)
+    if abs(y0 - y1) < 1: continue
+    if y1 < -8 and y0 < -8: continue
+    if y0 > h + 8 and y1 > h + 8: continue
+    let x = float(6 + (cols - 1 - j.column) * 10) + 0.5
+    if j.backward:
+      if isHot: cairo_set_source_rgba(cr, 0.08, 0.36, 0.20, 1)
+      else: cairo_set_source_rgba(cr, 0.30, 0.48, 0.36, 1)
+    else:
+      if isHot: cairo_set_source_rgba(cr, 0.48, 0.18, 0.12, 1)
+      else: cairo_set_source_rgba(cr, 0.62, 0.40, 0.30, 1)
+    cairo_set_line_width(cr, 1)
+    cairo_move_to(cr, x, y0)
+    cairo_line_to(cr, x, y1)
+    cairo_stroke(cr)
+    cairo_move_to(cr, x, y0)
+    cairo_line_to(cr, x + 5, y0)
+    cairo_stroke(cr)
+    cairo_move_to(cr, x, y1)
+    cairo_line_to(cr, x + 3.5, y1)
+    cairo_stroke(cr)
+    cairo_move_to(cr, x + 7, y1)
+    cairo_line_to(cr, x + 3, y1 - 3.2)
+    cairo_line_to(cr, x + 3, y1 + 3.2)
+    cairo_fill(cr)
+
 proc onGutterDraw(widget, cr, data: pointer): cint {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TSourceEditor): return 0
@@ -1882,18 +2097,21 @@ proc onGutterDraw(widget, cr, data: pointer): cint {.cdecl.} =
   cairo_rectangle(cr, 0, 0, w, h)
   cairo_fill(cr)
   let caret = ed.caretLine()
+  paintJumps(ed, cr, h, caret, false)
+  paintJumps(ed, cr, h, caret, true)
   var hot = -1
   for rail in ed.rails:
     if rail.openLine <= caret and caret <= rail.closeLine and rail.depth > hot:
       hot = rail.depth
   cairo_set_line_width(cr, 1)
+  let railAt = 6 + max(0, ed.jumpCols) * 10
   for rail in ed.rails:
     if rail.depth < 0 or rail.depth >= 6: continue
     let y0 = gutterLineY(ed, rail.openLine)
     let y1 = gutterLineY(ed, rail.closeLine)
     if y1 < -8 and y0 < -8: continue
     if y0 > h + 8 and y1 > h + 8: continue
-    let x = float(int(6 + rail.depth * 8)) + 0.5
+    let x = float(int(railAt + rail.depth * 8)) + 0.5
     let active = hot == rail.depth and rail.openLine <= caret and caret <= rail.closeLine
     if active: cairo_set_source_rgba(cr, 0.114, 0.306, 0.537, 1)
     else: cairo_set_source_rgba(cr, 0.72, 0.71, 0.68, 1)
@@ -1931,7 +2149,13 @@ proc findText*(self: TSourceEditor, needle: string, startAt: int): int =
 proc createEditor(self: TControl) =
   let ed = TSourceEditor(self)
   let lang = nimLanguage()
-  let buf = if lang != nil: gtk_source_buffer_new_with_language(lang) else: gtk_source_buffer_new(nil)
+  var buf: pointer
+  if lang != nil:
+    buf = gtk_source_buffer_new_with_language(lang)
+  else:
+    buf = gtk_source_buffer_new(nil)
+  let scheme = nimScheme()
+  if scheme != nil: gtk_source_buffer_set_style_scheme(buf, scheme)
   gtk_source_buffer_set_highlight_syntax(buf, 1)
   let view = gtk_source_view_new_with_buffer(buf)
   gtk_source_view_set_show_line_numbers(view, 1)
