@@ -313,17 +313,42 @@ proc lineOf(src, needle: string): int =
     if needle in line: return n
     inc n
 
+proc applyProp(prop, value: string): int
+
+proc handlerIdent(s: string): bool =
+  if s.len == 0 or s[0] notin {'A' .. 'Z', 'a' .. 'z', '_'}: return false
+  for ch in s:
+    if ch notin {'A' .. 'Z', 'a' .. 'z', '0' .. '9', '_'}: return false
+  true
+
+proc openEvent(comp: TComponent, prop: string, ed: TEdit) =
+  ## Fill an empty event with ComponentEvent and open that proc.
+  if comp == nil or current == nil or current.form == nil:
+    setStatus("Open a form to edit events")
+    return
+  var name = ""
+  if ed != nil: name = ed.text.strip
+  if name.len == 0: name = handlerName(comp.name, prop)
+  if not handlerIdent(name):
+    setStatus(prop & " needs a handler name")
+    return
+  let n = applyProp(prop, name)
+  if n == 0: return
+  if ed != nil:
+    syncing = true
+    ed.text = name
+    syncing = false
+  refreshEditor()
+  showCode()
+  if editor != nil: editor.gotoLine(lineOf(current.source, "proc " & name))
+  if n > 1: setStatus(prop & " -> " & name & " on " & $n & " controls")
+  else: setStatus(prop & " -> " & name)
+
 proc ensureHandler(c: TComponent) =
   if c == nil: return
   let ev = defaultEvent(c.className)
   if ev.len == 0 or not c.hasProp(ev): return
-  var existing = getProp(c, ev).strip
-  if existing.len == 0:
-    existing = handlerName(c.name, ev)
-    setProp(c, ev, existing)
-  refreshEditor()
-  showCode()
-  if editor != nil: editor.gotoLine(lineOf(current.source, "proc " & existing))
+  openEvent(c, ev, nil)
 
 proc clearInspector() =
   if inspector == nil: return
@@ -344,45 +369,120 @@ proc addLabel(text: string, x, y, w: int): TLabel =
 proc noteChange(prop: string) =
   refreshDesign()
   if prop == "Name" or prop == "Caption": refreshTree()
+
+proc applyProp(prop, value: string): int =
+  ## The inspector shows the primary control. A multi-selection receives the
+  ## same value on every selected control that has the property.
+  let targets = designApplyTargets(prop)
+  var msg = ""
+  for c in targets:
+    try:
+      c.setProp(prop, value)
+      inc result
+    except CatchableError as e:
+      msg = e.msg
+  if result > 0: noteChange(prop)
+  if result > 1:
+    setStatus(prop & " on " & $result & " controls")
+  elif result == 0 and msg.len > 0:
+    setStatus(msg)
+
+proc noteOne() =
   let sel = designSelected()
   if sel != nil: setStatus(sel.name & ": " & sel.className)
+
+proc bindOpenEvent(btn: TButton, ed: TEdit, comp: TComponent, prop: string) =
+  btn.onClick = proc(sender: TObject) = openEvent(comp, prop, ed)
+  ed.onDblClick = proc(sender: TObject) = openEvent(comp, prop, ed)
 
 proc bindEdit(ed: TEdit, comp: TComponent, prop: string) =
   ed.onChange = proc(sender: TObject) =
     if syncing: return
-    try:
-      comp.setProp(prop, ed.text)
-      noteChange(prop)
-    except CatchableError as e:
-      setStatus(e.msg)
+    if applyProp(prop, ed.text) == 1: noteOne()
 
 proc bindMemo(ed: TMemo, comp: TComponent, prop: string) =
   ed.onChange = proc(sender: TObject) =
     if syncing: return
-    try:
-      comp.setProp(prop, ed.text)
-      noteChange(prop)
-    except CatchableError as e:
-      setStatus(e.msg)
+    if applyProp(prop, ed.text) == 1: noteOne()
 
 proc bindCheck(cb: TCheckBox, comp: TComponent, prop: string) =
   cb.onClick = proc(sender: TObject) =
     if syncing: return
-    try:
-      comp.setProp(prop, if cb.checked: "True" else: "False")
-      noteChange(prop)
-    except CatchableError as e:
-      setStatus(e.msg)
+    let v = if cb.checked: "True" else: "False"
+    if applyProp(prop, v) == 1: noteOne()
+
+proc showSwatch(swatch: TPanel, text: string) =
+  ## clNone has no paint of its own, so the chip stays white.
+  var c = clWhite
+  try:
+    let parsed = parseColor(text)
+    if parsed != clNone: c = parsed
+  except CatchableError:
+    c = clWhite
+  swatch.color = c
+
+proc bindColor(box: TComboBox, swatch: TPanel, comp: TComponent, prop: string) =
+  box.onChange = proc(sender: TObject) =
+    if syncing: return
+    let v = if box.itemIndex >= 0 and box.itemIndex < box.items.len: box.items[box.itemIndex] else: box.text
+    showSwatch(swatch, v)
+    if applyProp(prop, v) == 1: setStatus(prop & " = " & v)
 
 proc bindCombo(box: TComboBox, comp: TComponent, prop: string) =
   box.onChange = proc(sender: TObject) =
     if syncing: return
     let v = if box.itemIndex >= 0 and box.itemIndex < box.items.len: box.items[box.itemIndex] else: box.text
+    if applyProp(prop, v) == 1: noteOne()
+
+proc bindIntEdit(ed: TEdit, comp: TComponent, prop: string) =
+  ## A half-typed sign or an empty box is not a value yet.
+  ed.onChange = proc(sender: TObject) =
+    if syncing: return
+    let t = ed.text.strip
+    if t.len == 0 or t == "-" or t == "+": return
     try:
-      comp.setProp(prop, v)
-      noteChange(prop)
-    except CatchableError as e:
-      setStatus(e.msg)
+      discard parseInt(t)
+    except ValueError:
+      setStatus(prop & " needs a number")
+      return
+    if applyProp(prop, t) == 1: noteOne()
+
+proc anchorOn(value, name: string): bool =
+  for part in value.split(','):
+    if cmpIgnoreCase(part.strip, name) == 0: return true
+
+proc anchorText(left, top, right, bottom: bool): string =
+  var bits: seq[string]
+  if left: bits.add("akLeft")
+  if top: bits.add("akTop")
+  if right: bits.add("akRight")
+  if bottom: bits.add("akBottom")
+  bits.join(",")
+
+proc bindAnchor(cb: TCheckBox, boxes: array[4, TCheckBox], comp: TComponent) =
+  ## boxes is Left, Top, Right, Bottom. The click reads all four.
+  cb.onClick = proc(sender: TObject) =
+    if syncing: return
+    let text = anchorText(boxes[0].checked, boxes[1].checked, boxes[2].checked, boxes[3].checked)
+    if applyProp("Anchors", text) == 1: setStatus("Anchors = " & text)
+
+proc bindIntStep(btn: TButton, ed: TEdit, comp: TComponent, prop: string, delta: int) =
+  btn.onClick = proc(sender: TObject) =
+    if syncing: return
+    var n = 0
+    try:
+      n = parseInt(ed.text.strip)
+    except ValueError, CatchableError:
+      try:
+        n = parseInt(getProp(comp, prop).strip)
+      except CatchableError:
+        setStatus(prop & " needs a number")
+        return
+    let next = $(n + delta)
+    syncing = true
+    ed.text = next
+    syncing = false
+    if applyProp(prop, next) == 1: setStatus(prop & " = " & next)
 
 const colorNames = [
   "clNone", "clBlack", "clWhite", "clRed", "clGreen", "clBlue", "clYellow",
@@ -399,6 +499,10 @@ proc rebuildInspector() =
     syncing = false
     return
   var y = 6
+  let many = designSelectionCount()
+  if many > 1:
+    discard addLabel($many & " controls", 6, y, 220)
+    y += 22
   for p in publishedProps(comp.className):
     let isEvent = p.kind == pkEvent
     if inspMode == "events" and not isEvent: continue
@@ -417,6 +521,28 @@ proc rebuildInspector() =
       cb.parent = inspector
       bindCheck(cb, comp, p.name)
       y += 26
+      continue
+    if p.name == "Anchors":
+      discard addLabel(p.name, 6, y + 2, 100)
+      let caps = ["Left", "Top", "Right", "Bottom"]
+      let keys = ["akLeft", "akTop", "akRight", "akBottom"]
+      var boxes: array[4, TCheckBox]
+      for i in 0 .. 3:
+        let cb = TCheckBox.new(ideForm)
+        cb.caption = caps[i]
+        cb.hint = keys[i]
+        cb.left = 108
+        cb.top = y + i * 22
+        cb.width = 120
+        cb.height = 22
+        cb.checked = anchorOn(value, keys[i])
+        cb.parent = inspector
+        boxes[i] = cb
+      bindAnchor(boxes[0], boxes, comp)
+      bindAnchor(boxes[1], boxes, comp)
+      bindAnchor(boxes[2], boxes, comp)
+      bindAnchor(boxes[3], boxes, comp)
+      y += 92
       continue
     discard addLabel(p.name, 6, y + 2, 100)
     case p.kind
@@ -441,13 +567,34 @@ proc rebuildInspector() =
       var names: seq[string] = @colorNames
       if value.len > 0 and value notin names: names.add(value)
       box.items = names
-      box.text = value
       box.left = 110
       box.top = y
-      box.width = 130
+      box.width = 96
       box.height = 26
+      var idx = -1
+      for i, n in names:
+        if cmpIgnoreCase(n, value) == 0: idx = i
       box.parent = inspector
-      bindCombo(box, comp, p.name)
+      if idx >= 0: box.itemIndex = idx
+      let frame = TPanel.new(ideForm)
+      frame.caption = ""
+      frame.bevel = bvNone
+      frame.color = clGray
+      frame.left = 208
+      frame.top = y
+      frame.width = 28
+      frame.height = 26
+      frame.parent = inspector
+      let swatch = TPanel.new(ideForm)
+      swatch.caption = ""
+      swatch.bevel = bvNone
+      swatch.left = 210
+      swatch.top = y + 2
+      swatch.width = 24
+      swatch.height = 22
+      showSwatch(swatch, value)
+      swatch.parent = inspector
+      bindColor(box, swatch, comp, p.name)
       y += 30
     of pkStrings:
       let ed = TMemo.new(ideForm)
@@ -463,11 +610,44 @@ proc rebuildInspector() =
       let ed = TEdit.new(ideForm)
       ed.left = 110
       ed.top = y
-      ed.width = 130
+      ed.width = 78
       ed.height = 24
       ed.text = value
       ed.parent = inspector
-      bindEdit(ed, comp, p.name)
+      let go = TButton.new(ideForm)
+      go.caption = "..."
+      go.left = 190
+      go.top = y
+      go.width = 48
+      go.height = 24
+      go.parent = inspector
+      bindOpenEvent(go, ed, comp, p.name)
+      y += 28
+    of pkInt:
+      let ed = TEdit.new(ideForm)
+      ed.left = 110
+      ed.top = y
+      ed.width = 56
+      ed.height = 24
+      ed.text = value
+      ed.parent = inspector
+      bindIntEdit(ed, comp, p.name)
+      let minus = TButton.new(ideForm)
+      minus.caption = "-"
+      minus.left = 168
+      minus.top = y
+      minus.width = 36
+      minus.height = 24
+      minus.parent = inspector
+      let plus = TButton.new(ideForm)
+      plus.caption = "+"
+      plus.left = 206
+      plus.top = y
+      plus.width = 36
+      plus.height = 24
+      plus.parent = inspector
+      bindIntStep(minus, ed, comp, p.name, -1)
+      bindIntStep(plus, ed, comp, p.name, 1)
       y += 28
     else:
       let ed = TEdit.new(ideForm)

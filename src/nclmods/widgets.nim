@@ -1964,20 +1964,23 @@ proc placeCaret(self: TSourceEditor, line, column: int) =
     gtk_widget_grab_focus(self.inner)
 
 proc scrollEditorJump(data: pointer): cint {.cdecl.} =
-  ## The code page may have had no size when the jump was asked for.
-  ## Scroll again after GTK has shown it.
+  ## Line heights are computed in an idle after the text is replaced, and
+  ## scroll_to_iter does nothing until that finishes. Keep trying briefly.
   let c = recall(data)
-  if c != nil and c of TSourceEditor:
-    let ed = TSourceEditor(c)
-    ed.placeCaret(ed.jumpLine, ed.jumpCol)
+  if c == nil or not (c of TSourceEditor): return 0
+  let ed = TSourceEditor(c)
+  ed.placeCaret(ed.jumpLine, ed.jumpCol)
+  inc ed.jumpTries
+  if ed.jumpTries < 6: return 1
   0
 
 proc gotoLine*(self: TSourceEditor, line: int, column = 1) =
   self.jumpLine = line
   self.jumpCol = column
+  self.jumpTries = 0
   self.placeCaret(line, column)
   if not headless:
-    discard g_timeout_add(0, cast[pointer](scrollEditorJump), cast[pointer](self.liveId))
+    discard g_timeout_add(100, cast[pointer](scrollEditorJump), cast[pointer](self.liveId))
 
 proc caretPlace(self: TSourceEditor, line, column: var int) =
   line = 0

@@ -262,6 +262,7 @@ type
     jumpCols: int
     jumpLine: int
     jumpCol: int
+    jumpTries: int
     onCaret*: proc(line: int) {.closure.}
   TApplication* = ref object
     title*: string
@@ -1148,8 +1149,12 @@ proc registerCoreProps() =
     proc(c: TComponent, v: string) = TControl(c).align = parseEnum[TAlign](v.strip))
   propStr("TControl", "Anchors", pkString,
     proc(c: TComponent): string =
+      let s = TControl(c).fAnchors
       var bits: seq[string]
-      for a in TControl(c).fAnchors: bits.add($a)
+      if akLeft in s: bits.add("akLeft")
+      if akTop in s: bits.add("akTop")
+      if akRight in s: bits.add("akRight")
+      if akBottom in s: bits.add("akBottom")
       bits.join(","),
     proc(c: TComponent, v: string) =
       var s: set[TAnchorKind]

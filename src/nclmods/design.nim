@@ -39,6 +39,16 @@ proc designForm*(): TForm = dForm
 proc designSelected*(): TComponent = dSel
 proc designSelection*(): seq[TComponent] = dSels
 proc designSelectionCount*(): int = dSels.len
+
+proc designApplyTargets*(prop: string): seq[TComponent] =
+  ## The inspector primary, plus every other selected control that has the
+  ## property. Name stays on the primary. The form is not added beside it.
+  if dSel == nil: return
+  result.add(dSel)
+  if prop == "Name": return
+  for c in dSels:
+    if c == nil or c == dSel or c == dForm: continue
+    if c.hasProp(prop): result.add(c)
 proc designTool*(): string = dTool
 proc `designTool=`*(v: string) = dTool = v
 proc designSnapOn*(): bool = dSnap
