@@ -151,6 +151,8 @@ type
     fPassword: bool
     fCue: string
     onReturn*: TNotifyEvent
+  TSpinEdit* = ref object of TWinControl
+    fValue, fMin, fMax, fIncrement: int
   TMemo* = ref object of TWinControl
     fText: string
     fReadOnly: bool
@@ -158,11 +160,18 @@ type
     fMonospace: bool
   TCheckBox* = ref object of TWinControl
     fChecked: bool
+  TToggleBox* = ref object of TWinControl
+    fChecked: bool
   TRadioButton* = ref object of TWinControl
     fChecked: bool
   TListBox* = ref object of TWinControl
     fItems: seq[string]
     fItemIndex: int
+  TCheckListBox* = ref object of TWinControl
+    fItems: seq[string]
+    fChecked: seq[bool]
+    fItemIndex: int
+    onClickCheck*: TNotifyEvent
   TComboBox* = ref object of TWinControl
     fItems: seq[string]
     fItemIndex: int
@@ -172,6 +181,9 @@ type
   TRadioGroup* = ref object of TWinControl
     fItems: seq[string]
     fItemIndex: int
+  TCheckGroup* = ref object of TWinControl
+    fItems: seq[string]
+    fChecked: seq[bool]
   TPanel* = ref object of TWinControl
     fBevel: TBevelCut
     capLabel: pointer
@@ -190,6 +202,8 @@ type
     dragOrigin: int
     siblingOrigin: int
     sibling: TControl
+    ## The neighboring pane stays at least this wide, or this tall.
+    minSize*: int
   TScrollBox* = ref object of TWinControl
     ## When set before the scroll box is realized, children wrap in a flow box.
     flow*: bool
@@ -198,6 +212,9 @@ type
     strip: bool
   TTrackBar* = ref object of TWinControl
     fMin, fMax, fPosition: int
+    fOrientation: TOrientation
+  TScrollBar* = ref object of TWinControl
+    fMin, fMax, fPosition, fPage, fSmall, fLarge: int
     fOrientation: TOrientation
   TProgressBar* = ref object of TWinControl
     fMin, fMax, fPosition: int

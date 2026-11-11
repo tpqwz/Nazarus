@@ -51,11 +51,22 @@ proc onToggled(widget: pointer, data: pointer) {.cdecl.} =
   let ctrl = TControl(c)
   if ctrl of TCheckBox:
     TCheckBox(ctrl).fChecked = gtk_toggle_button_get_active(ctrl.handle) != 0
+  elif ctrl of TToggleBox:
+    TToggleBox(ctrl).fChecked = gtk_toggle_button_get_active(ctrl.handle) != 0
   elif ctrl of TRadioButton:
     TRadioButton(ctrl).fChecked = gtk_toggle_button_get_active(ctrl.handle) != 0
   if ctrl.designing: return
   if ctrl.onClick != nil: guard proc() = ctrl.onClick(ctrl)
   if ctrl.onChange != nil: guard proc() = ctrl.onChange(ctrl)
+
+proc onSpinChanged(widget: pointer, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TSpinEdit) or TSpinEdit(c).refreshing: return
+  let sp = TSpinEdit(c)
+  if sp.handle != nil:
+    sp.fValue = int(gtk_spin_button_get_value(sp.handle))
+  if sp.designing: return
+  if sp.onChange != nil: guard proc() = sp.onChange(sp)
 
 proc onEntryChanged(widget: pointer, data: pointer) {.cdecl.} =
   let c = recall(data)
@@ -86,6 +97,43 @@ proc onComboChanged(widget: pointer, data: pointer) {.cdecl.} =
   if cb.onChange != nil: guard proc() = cb.onChange(cb)
   if cb.onClick != nil: guard proc() = cb.onClick(cb)
 
+proc checkRowIndex(box: TCheckListBox, widget: pointer): int =
+  result = -1
+  if box.inner == nil or widget == nil: return
+  var child = gtk_container_get_children(box.inner)
+  let head = child
+  var i = 0
+  while child != nil:
+    let gl = cast[ptr GList](child)
+    let row = gl.data
+    let inner = gtk_bin_get_child(row)
+    if row == widget or inner == widget:
+      result = i
+      break
+    child = gl.next
+    inc i
+  if head != nil: g_list_free(head)
+
+proc onCheckToggled(widget, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TCheckListBox) or TCheckListBox(c).refreshing: return
+  let box = TCheckListBox(c)
+  let i = checkRowIndex(box, widget)
+  if i < 0: return
+  while box.fChecked.len <= i: box.fChecked.add(false)
+  box.fChecked[i] = gtk_toggle_button_get_active(widget) != 0
+  if box.designing: return
+  if box.onClickCheck != nil: guard proc() = box.onClickCheck(box)
+
+proc onCheckRowSelected(box, row, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TCheckListBox) or TCheckListBox(c).refreshing: return
+  let lb = TCheckListBox(c)
+  if row == nil: lb.fItemIndex = -1
+  else: lb.fItemIndex = int(gtk_list_box_row_get_index(row))
+  if lb.designing: return
+  if lb.onClick != nil: guard proc() = lb.onClick(lb)
+
 proc onRowSelected(box, row, data: pointer) {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TListBox) or TListBox(c).refreshing: return
@@ -103,6 +151,15 @@ proc onRowActivated(box, row, data: pointer) {.cdecl.} =
   if row != nil: lb.fItemIndex = int(gtk_list_box_row_get_index(row))
   if lb.designing: return
   if lb.onDblClick != nil: guard proc() = lb.onDblClick(lb)
+
+proc onScrollChanged(widget: pointer, data: pointer) {.cdecl.} =
+  let c = recall(data)
+  if c == nil or not (c of TScrollBar) or TScrollBar(c).refreshing: return
+  let sb = TScrollBar(c)
+  if sb.handle != nil:
+    sb.fPosition = int(gtk_range_get_value(sb.handle))
+  if sb.designing: return
+  if sb.onChange != nil: guard proc() = sb.onChange(sb)
 
 proc onRangeChanged(widget: pointer, data: pointer) {.cdecl.} =
   let c = recall(data)
@@ -308,6 +365,69 @@ proc new*(_: typedesc[TEdit], owner: TComponent = nil): TEdit =
   result.createImpl = createEdit
   result.pushState = pushEdit
 
+proc clampSpin(self: TSpinEdit) =
+  if self.fMax < self.fMin: self.fMax = self.fMin
+  if self.fIncrement < 1: self.fIncrement = 1
+  if self.fValue < self.fMin: self.fValue = self.fMin
+  if self.fValue > self.fMax: self.fValue = self.fMax
+
+proc pushSpin(self: TControl) =
+  let sp = TSpinEdit(self)
+  if sp.handle == nil: return
+  sp.clampSpin()
+  sp.refreshing = true
+  gtk_spin_button_set_range(sp.handle, float(sp.fMin), float(sp.fMax))
+  gtk_spin_button_set_increments(sp.handle, float(sp.fIncrement), float(sp.fIncrement * 10))
+  gtk_spin_button_set_digits(sp.handle, 0)
+  gtk_spin_button_set_value(sp.handle, float(sp.fValue))
+  sp.refreshing = false
+
+proc value*(self: TSpinEdit): int = self.fValue
+proc `value=`*(self: TSpinEdit, v: int) =
+  self.fValue = v
+  self.clampSpin()
+  if self.handle != nil and not self.refreshing:
+    self.refreshing = true
+    gtk_spin_button_set_value(self.handle, float(self.fValue))
+    self.refreshing = false
+proc minValue*(self: TSpinEdit): int = self.fMin
+proc `minValue=`*(self: TSpinEdit, v: int) =
+  self.fMin = v
+  self.clampSpin()
+  if self.handle != nil: pushSpin(self)
+proc maxValue*(self: TSpinEdit): int = self.fMax
+proc `maxValue=`*(self: TSpinEdit, v: int) =
+  self.fMax = v
+  self.clampSpin()
+  if self.handle != nil: pushSpin(self)
+proc increment*(self: TSpinEdit): int = self.fIncrement
+proc `increment=`*(self: TSpinEdit, v: int) =
+  self.fIncrement = v
+  self.clampSpin()
+  if self.handle != nil: pushSpin(self)
+
+proc createSpin(self: TControl) =
+  let sp = TSpinEdit(self)
+  sp.clampSpin()
+  let upper = float(max(sp.fMax, sp.fMin))
+  sp.handle = gtk_spin_button_new_with_range(float(sp.fMin), upper, float(sp.fIncrement))
+  gtk_spin_button_set_numeric(sp.handle, 1)
+  gtk_spin_button_set_digits(sp.handle, 0)
+  connect(sp.handle, "value-changed", cast[pointer](onSpinChanged), sp.liveId)
+  pushSpin(sp)
+
+proc new*(_: typedesc[TSpinEdit], owner: TComponent = nil): TSpinEdit =
+  result = TSpinEdit()
+  initControl(result, "TSpinEdit", owner)
+  result.fWidth = 160
+  result.fHeight = 32
+  result.fMin = 0
+  result.fMax = 100
+  result.fIncrement = 1
+  result.fValue = 0
+  result.createImpl = createSpin
+  result.pushState = pushSpin
+
 proc text*(self: TMemo): string = self.fText
 proc `text=`*(self: TMemo, v: string) =
   self.fText = v
@@ -461,6 +581,37 @@ proc new*(_: typedesc[TCheckBox], owner: TComponent = nil): TCheckBox =
   result.createImpl = createCheck
   result.pushState = pushCheck
 
+proc checked*(self: TToggleBox): bool = self.fChecked
+proc `checked=`*(self: TToggleBox, v: bool) =
+  self.fChecked = v
+  if self.handle != nil and not self.refreshing:
+    self.refreshing = true
+    gtk_toggle_button_set_active(self.handle, if v: 1 else: 0)
+    self.refreshing = false
+
+proc pushToggle(self: TControl) =
+  let b = TToggleBox(self)
+  if b.handle == nil: return
+  gtk_button_set_label(b.handle, gtkMnemonic(b.fCaption).cstring)
+  gtk_button_set_use_underline(b.handle, 1)
+  b.refreshing = true
+  gtk_toggle_button_set_active(b.handle, if b.fChecked: 1 else: 0)
+  b.refreshing = false
+
+proc createToggle(self: TControl) =
+  self.handle = gtk_toggle_button_new_with_label("")
+  connect(self.handle, "toggled", cast[pointer](onToggled), self.liveId)
+  pushToggle(self)
+
+proc new*(_: typedesc[TToggleBox], owner: TComponent = nil): TToggleBox =
+  result = TToggleBox()
+  initControl(result, "TToggleBox", owner)
+  result.fWidth = 90
+  result.fHeight = 28
+  result.fCaption = result.fName
+  result.createImpl = createToggle
+  result.pushState = pushToggle
+
 proc checked*(self: TRadioButton): bool = self.fChecked
 proc `checked=`*(self: TRadioButton, v: bool) =
   self.fChecked = v
@@ -566,6 +717,107 @@ proc new*(_: typedesc[TListBox], owner: TComponent = nil): TListBox =
   result.fItemIndex = -1
   result.createImpl = createList
   result.pushState = pushList
+
+proc items*(self: TCheckListBox): seq[string] = self.fItems
+proc itemIndex*(self: TCheckListBox): int = self.fItemIndex
+
+proc itemChecked*(self: TCheckListBox, i: int): bool =
+  i >= 0 and i < self.fChecked.len and self.fChecked[i]
+
+proc setItemChecked*(self: TCheckListBox, i: int, v: bool) =
+  if i < 0: return
+  while self.fChecked.len <= i: self.fChecked.add(false)
+  self.fChecked[i] = v
+  if self.inner != nil and not self.refreshing: self.applyChrome()
+
+proc fitChecks(self: TCheckListBox) =
+  if self.fChecked.len > self.fItems.len: self.fChecked.setLen(self.fItems.len)
+  while self.fChecked.len < self.fItems.len: self.fChecked.add(false)
+
+proc selectCheckList(self: TCheckListBox) =
+  if self.inner == nil or self.fItemIndex < 0: return
+  var child = gtk_container_get_children(self.inner)
+  let head = child
+  var i = 0
+  while child != nil:
+    let gl = cast[ptr GList](child)
+    if i == self.fItemIndex:
+      gtk_list_box_select_row(self.inner, gl.data)
+      break
+    child = gl.next
+    inc i
+  if head != nil: g_list_free(head)
+
+proc pushChecks(self: TControl) =
+  let lb = TCheckListBox(self)
+  if lb.inner == nil: return
+  lb.fitChecks()
+  lb.refreshing = true
+  clearGtkChildren(lb.inner)
+  for i, item in lb.fItems:
+    let chk = gtk_check_button_new_with_label(item.cstring)
+    gtk_toggle_button_set_active(chk, if lb.fChecked[i]: 1 else: 0)
+    gtk_widget_show(chk)
+    gtk_list_box_insert(lb.inner, chk, -1)
+    connect(chk, "toggled", cast[pointer](onCheckToggled), lb.liveId)
+  lb.selectCheckList()
+  lb.refreshing = false
+
+proc `items=`*(self: TCheckListBox, v: seq[string]) =
+  self.fItems = v
+  self.fitChecks()
+  if self.fItemIndex >= v.len: self.fItemIndex = v.len - 1
+  self.applyChrome()
+
+proc `itemIndex=`*(self: TCheckListBox, v: int) =
+  self.fItemIndex = v
+  if self.inner != nil and not self.refreshing:
+    self.refreshing = true
+    self.selectCheckList()
+    self.refreshing = false
+
+proc checksText(self: TCheckListBox): string =
+  var parts: seq[string]
+  for i in 0 ..< self.fItems.len:
+    parts.add(if self.itemChecked(i): "True" else: "False")
+  parts.join("\n")
+
+proc applyChecks(self: TCheckListBox, text: string) =
+  let lines = text.splitLines()
+  var marks: seq[bool]
+  for line in lines:
+    let t = line.toLowerAscii
+    if t.len == 0: continue
+    marks.add(t == "true" or t == "1" or t == "yes")
+  if self.fItems.len == 0:
+    self.fChecked = marks
+  else:
+    self.fChecked.setLen(0)
+    for i in 0 ..< self.fItems.len:
+      self.fChecked.add(i < marks.len and marks[i])
+  self.applyChrome()
+
+proc createCheckList(self: TControl) =
+  let lb = TCheckListBox(self)
+  let sw = gtk_scrolled_window_new(nil, nil)
+  gtk_scrolled_window_set_policy(sw, GtkPolicyAuto, GtkPolicyAuto)
+  gtk_scrolled_window_set_shadow_type(sw, GtkShadowIn)
+  gtk_scrolled_window_set_propagate_natural_width(sw, 0)
+  let box = gtk_list_box_new()
+  gtk_container_add(sw, box)
+  lb.handle = sw
+  lb.inner = box
+  connect(box, "row-selected", cast[pointer](onCheckRowSelected), lb.liveId)
+  pushChecks(lb)
+
+proc new*(_: typedesc[TCheckListBox], owner: TComponent = nil): TCheckListBox =
+  result = TCheckListBox()
+  initControl(result, "TCheckListBox", owner)
+  result.fWidth = 160
+  result.fHeight = 100
+  result.fItemIndex = -1
+  result.createImpl = createCheckList
+  result.pushState = pushChecks
 
 proc items*(self: TComboBox): seq[string] = self.fItems
 proc itemIndex*(self: TComboBox): int = self.fItemIndex
@@ -743,6 +995,113 @@ proc new*(_: typedesc[TRadioGroup], owner: TComponent = nil): TRadioGroup =
   result.createImpl = createRadioGroup
   result.pushState = pushRadioGroup
 
+proc items*(self: TCheckGroup): seq[string] = self.fItems
+
+proc itemChecked*(self: TCheckGroup, i: int): bool =
+  i >= 0 and i < self.fChecked.len and self.fChecked[i]
+
+proc fitGroupChecks(self: TCheckGroup) =
+  if self.fChecked.len > self.fItems.len: self.fChecked.setLen(self.fItems.len)
+  while self.fChecked.len < self.fItems.len: self.fChecked.add(false)
+
+proc bindGroupCheck(group: TCheckGroup, box: TCheckBox, index: int) =
+  ## The index is a parameter so each box keeps its own row. A loop variable
+  ## would be one slot shared by every click.
+  box.onClick = proc(sender: TObject) =
+    if group.refreshing: return
+    if index >= 0 and index < group.fChecked.len:
+      group.fChecked[index] = box.checked
+    if group.designing: return
+    if group.onClick != nil: group.onClick(group)
+
+proc rebuildChecks(self: TCheckGroup) =
+  var kept: seq[TControl]
+  for c in self.controls:
+    if c.internal:
+      if c.handle != nil: gtk_widget_destroy(c.handle)
+      c.handle = nil
+      c.dead = true
+      c.fParent = nil
+      if c.liveId > 0 and c.liveId < live.len: live[c.liveId] = nil
+    else:
+      kept.add(c)
+  self.controls = kept
+  var still: seq[TComponent]
+  for c in self.owned:
+    if not c.dead and not c.internal: still.add(c)
+  self.owned = still
+  self.fitGroupChecks()
+  self.refreshing = true
+  for i, item in self.fItems:
+    let box = TCheckBox.new(self)
+    box.internal = true
+    box.fCaption = item
+    box.fLeft = 8
+    box.fTop = 4 + i * 22
+    box.fWidth = max(40, self.fWidth - 24)
+    box.fHeight = 22
+    box.parent = self
+    box.checked = self.fChecked[i]
+    bindGroupCheck(self, box, i)
+  self.refreshing = false
+
+proc `items=`*(self: TCheckGroup, v: seq[string]) =
+  self.fItems = v
+  self.fitGroupChecks()
+  self.rebuildChecks()
+
+proc setItemChecked*(self: TCheckGroup, i: int, v: bool) =
+  if i < 0: return
+  while self.fChecked.len <= i: self.fChecked.add(false)
+  self.fChecked[i] = v
+  if self.handle == nil or self.refreshing: return
+  var n = 0
+  self.refreshing = true
+  for c in self.controls:
+    if c of TCheckBox and c.internal:
+      if n == i: TCheckBox(c).checked = v
+      inc n
+  self.refreshing = false
+
+proc checksText(self: TCheckGroup): string =
+  var parts: seq[string]
+  for i in 0 ..< self.fItems.len:
+    parts.add(if self.itemChecked(i): "True" else: "False")
+  parts.join("\n")
+
+proc applyChecks(self: TCheckGroup, text: string) =
+  var marks: seq[bool]
+  for line in text.splitLines():
+    let t = line.toLowerAscii
+    if t.len == 0: continue
+    marks.add(t == "true" or t == "1" or t == "yes")
+  if self.fItems.len == 0:
+    self.fChecked = marks
+  else:
+    self.fChecked.setLen(0)
+    for i in 0 ..< self.fItems.len:
+      self.fChecked.add(i < marks.len and marks[i])
+  self.rebuildChecks()
+
+proc pushCheckGroup(self: TControl) =
+  let g = TCheckGroup(self)
+  if g.handle != nil: gtk_frame_set_label(g.handle, g.fCaption.cstring)
+  g.rebuildChecks()
+
+proc createCheckGroup(self: TControl) =
+  let g = TCheckGroup(self)
+  g.installFrame(g.fCaption)
+  g.rebuildChecks()
+
+proc new*(_: typedesc[TCheckGroup], owner: TComponent = nil): TCheckGroup =
+  result = TCheckGroup()
+  initControl(result, "TCheckGroup", owner)
+  result.fWidth = 185
+  result.fHeight = 105
+  result.fCaption = result.fName
+  result.createImpl = createCheckGroup
+  result.pushState = pushCheckGroup
+
 proc bevel*(self: TPanel): TBevelCut = self.fBevel
 proc `bevel=`*(self: TPanel, v: TBevelCut) =
   self.fBevel = v
@@ -869,50 +1228,84 @@ proc prevSplitSibling(self: TSplitter): TControl =
     if c == self: return prev
     if c.fVisible and not (c of TSplitter): prev = c
 
+proc splitPoint(widget, ev: pointer): tuple[x, y: int] =
+  ## Screen position of the event. The bar moves while it is dragged, so a
+  ## coordinate inside the bar would shrink to nothing after the first step.
+  var lx, ly: cdouble
+  discard gdk_event_get_coords(ev, addr lx, addr ly)
+  var ox, oy: cint
+  let win = gtk_widget_get_window(widget)
+  if win != nil: discard gdk_window_get_origin(win, addr ox, addr oy)
+  (int(ox) + int(lx), int(oy) + int(ly))
+
 proc onSplitPress(widget, ev, data: pointer): cint {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TSplitter): return 0
   let sp = TSplitter(c)
   if sp.designing: return 0
-  var x, y: cdouble
-  discard gdk_event_get_coords(ev, addr x, addr y)
+  let pt = splitPoint(widget, ev)
+  if sp.handle != nil: gtk_grab_add(sp.handle)
   sp.sibling = sp.prevSplitSibling()
   if sp.sibling == nil: return 0
   sp.dragging = true
   let stacked = sp.fParent != nil and sp.fParent.fStacked and sp.fAlign in {alLeft, alRight}
   if sp.fAlign in {alTop, alBottom} or stacked:
-    sp.dragOrigin = int(y)
+    sp.dragOrigin = pt.y
     if stacked: sp.siblingOrigin = sp.sibling.columnSpan()
     else: sp.siblingOrigin = sp.sibling.fHeight
   else:
-    sp.dragOrigin = int(x)
+    sp.dragOrigin = pt.x
     sp.siblingOrigin = sp.sibling.columnSpan()
   1
+
+proc moveSplit(sp: TSplitter, dx, dy: int) =
+  ## dx and dy are the pointer's travel from the press. A left or right
+  ## splitter changes the neighbor's width. Top and bottom change its height.
+  if sp.sibling == nil: return
+  let floor = max(20, sp.minSize)
+  var cap = 100000
+  if sp.fParent != nil:
+    if sp.fAlign in {alTop, alBottom}:
+      cap = max(floor, sp.fParent.fHeight - 80)
+    else:
+      cap = max(floor, sp.fParent.fWidth - 160)
+  let stacked = sp.fParent != nil and sp.fParent.fStacked and sp.fAlign in {alLeft, alRight}
+  if sp.fAlign in {alTop, alBottom}:
+    let h = if sp.fAlign == alBottom: sp.siblingOrigin - dy else: sp.siblingOrigin + dy
+    sp.sibling.height = max(floor, min(cap, h))
+  elif stacked:
+    sp.sibling.width = max(floor, min(cap, sp.siblingOrigin + dy))
+  else:
+    let w = if sp.fAlign == alRight: sp.siblingOrigin - dx else: sp.siblingOrigin + dx
+    sp.sibling.width = max(floor, min(cap, w))
+
+proc nudgeSplitter*(self: TSplitter, dx, dy: int) =
+  ## Move the splitter by `(dx, dy)` as a drag would, without a pointer.
+  self.sibling = self.prevSplitSibling()
+  if self.sibling == nil: return
+  let stacked = self.fParent != nil and self.fParent.fStacked and self.fAlign in {alLeft, alRight}
+  if self.fAlign in {alTop, alBottom} or stacked:
+    if stacked: self.siblingOrigin = self.sibling.columnSpan()
+    else: self.siblingOrigin = self.sibling.fHeight
+  else:
+    self.siblingOrigin = self.sibling.columnSpan()
+  moveSplit(self, dx, dy)
 
 proc onSplitMotion(widget, ev, data: pointer): cint {.cdecl.} =
   let c = recall(data)
   if c == nil or not (c of TSplitter): return 0
   let sp = TSplitter(c)
   if not sp.dragging or sp.sibling == nil: return 0
-  var x, y: cdouble
-  discard gdk_event_get_coords(ev, addr x, addr y)
-  let stacked = sp.fParent != nil and sp.fParent.fStacked and sp.fAlign in {alLeft, alRight}
-  if sp.fAlign in {alTop, alBottom}:
-    let d = int(y) - sp.dragOrigin
-    let h = if sp.fAlign == alBottom: sp.siblingOrigin - d else: sp.siblingOrigin + d
-    sp.sibling.height = max(20, h)
-  elif stacked:
-    let d = int(y) - sp.dragOrigin
-    sp.sibling.width = max(20, sp.siblingOrigin + d)
-  else:
-    let d = int(x) - sp.dragOrigin
-    let w = if sp.fAlign == alRight: sp.siblingOrigin - d else: sp.siblingOrigin + d
-    sp.sibling.width = max(20, w)
+  let pt = splitPoint(widget, ev)
+  moveSplit(sp, pt.x - sp.dragOrigin, pt.y - sp.dragOrigin)
   1
 
 proc onSplitRelease(widget, ev, data: pointer): cint {.cdecl.} =
   let c = recall(data)
-  if c != nil and c of TSplitter: TSplitter(c).dragging = false
+  if c != nil and c of TSplitter:
+    let sp = TSplitter(c)
+    if sp.handle != nil: gtk_grab_remove(sp.handle)
+    sp.dragging = false
   0
 
 proc createSplitter(self: TControl) =
@@ -933,6 +1326,7 @@ proc new*(_: typedesc[TSplitter], owner: TComponent = nil): TSplitter =
   result.fAlign = alLeft
   result.fWidth = 5
   result.fHeight = 80
+  result.minSize = 20
   result.createImpl = createSplitter
 
 proc nudgeAdj(adj: pointer, delta: float) =
@@ -1082,6 +1476,108 @@ proc new*(_: typedesc[TTrackBar], owner: TComponent = nil): TTrackBar =
   result.fPosition = 0
   result.createImpl = createTrack
   result.pushState = pushTrack
+
+proc clampScroll(self: TScrollBar) =
+  if self.fMax < self.fMin: self.fMax = self.fMin
+  if self.fPage < 0: self.fPage = 0
+  if self.fSmall < 1: self.fSmall = 1
+  if self.fLarge < 1: self.fLarge = 1
+  if self.fPosition < self.fMin: self.fPosition = self.fMin
+  if self.fPosition > self.fMax: self.fPosition = self.fMax
+
+proc pushScroll(self: TControl) =
+  let sb = TScrollBar(self)
+  if sb.handle == nil: return
+  sb.clampScroll()
+  let adj = gtk_range_get_adjustment(sb.handle)
+  if adj == nil: return
+  let page = float(sb.fPage)
+  sb.refreshing = true
+  gtk_adjustment_configure(adj, float(sb.fPosition), float(sb.fMin),
+    float(sb.fMax) + page, float(sb.fSmall), float(sb.fLarge), page)
+  sb.refreshing = false
+
+proc min*(self: TScrollBar): int = self.fMin
+proc `min=`*(self: TScrollBar, v: int) =
+  self.fMin = v
+  self.clampScroll()
+  if self.handle != nil: pushScroll(self)
+proc max*(self: TScrollBar): int = self.fMax
+proc `max=`*(self: TScrollBar, v: int) =
+  self.fMax = v
+  self.clampScroll()
+  if self.handle != nil: pushScroll(self)
+proc position*(self: TScrollBar): int = self.fPosition
+proc `position=`*(self: TScrollBar, v: int) =
+  self.fPosition = v
+  self.clampScroll()
+  if self.handle != nil and not self.refreshing: pushScroll(self)
+proc pageSize*(self: TScrollBar): int = self.fPage
+proc `pageSize=`*(self: TScrollBar, v: int) =
+  self.fPage = v
+  self.clampScroll()
+  if self.handle != nil: pushScroll(self)
+proc smallChange*(self: TScrollBar): int = self.fSmall
+proc `smallChange=`*(self: TScrollBar, v: int) =
+  self.fSmall = v
+  self.clampScroll()
+  if self.handle != nil: pushScroll(self)
+proc largeChange*(self: TScrollBar): int = self.fLarge
+proc `largeChange=`*(self: TScrollBar, v: int) =
+  self.fLarge = v
+  self.clampScroll()
+  if self.handle != nil: pushScroll(self)
+proc orientation*(self: TScrollBar): TOrientation = self.fOrientation
+
+proc recreateScroll(self: TScrollBar) =
+  let parent = self.fParent
+  if self.handle != nil:
+    gtk_widget_destroy(self.handle)
+  self.handle = nil
+  self.placed = false
+  self.held = false
+  if self.createImpl != nil: self.createImpl(self)
+  self.applyChrome()
+  if parent != nil: self.placeWidget()
+
+proc `orientation=`*(self: TScrollBar, v: TOrientation) =
+  if v == self.fOrientation: return
+  if v == orVertical and self.fWidth > self.fHeight:
+    let w = self.fWidth
+    self.fWidth = self.fHeight
+    self.fHeight = w
+  elif v == orHorizontal and self.fHeight > self.fWidth:
+    let h = self.fHeight
+    self.fHeight = self.fWidth
+    self.fWidth = h
+  self.fOrientation = v
+  if self.handle != nil: self.recreateScroll()
+
+proc createScrollBar(self: TControl) =
+  let sb = TScrollBar(self)
+  sb.clampScroll()
+  let orient = if sb.fOrientation == orVertical: GtkOrientVertical else: GtkOrientHorizontal
+  let page = float(sb.fPage)
+  let adj = gtk_adjustment_new(float(sb.fPosition), float(sb.fMin),
+    float(sb.fMax) + page, float(sb.fSmall), float(sb.fLarge), page)
+  sb.handle = gtk_scrollbar_new(orient.cint, adj)
+  connect(sb.handle, "value-changed", cast[pointer](onScrollChanged), sb.liveId)
+  pushScroll(sb)
+
+proc new*(_: typedesc[TScrollBar], owner: TComponent = nil): TScrollBar =
+  result = TScrollBar()
+  initControl(result, "TScrollBar", owner)
+  result.fWidth = 160
+  result.fHeight = 18
+  result.fMin = 0
+  result.fMax = 100
+  result.fPosition = 0
+  result.fPage = 10
+  result.fSmall = 1
+  result.fLarge = 10
+  result.fOrientation = orHorizontal
+  result.createImpl = createScrollBar
+  result.pushState = pushScroll
 
 proc position*(self: TProgressBar): int = self.fPosition
 proc `position=`*(self: TProgressBar, v: int) =
@@ -1332,7 +1828,12 @@ proc createTree(self: TControl) =
   let rend = gtk_cell_renderer_text_new()
   gtk_tree_view_column_pack_start(col, rend, 1)
   gtk_tree_view_column_add_attribute(col, rend, "text", 0)
+  # A fixed column scrolls inside the pane. The pane width stays the one the
+  # splitter sets, instead of growing to the longest name.
+  gtk_tree_view_column_set_sizing(col, 2)
+  gtk_tree_view_column_set_fixed_width(col, 480)
   discard gtk_tree_view_append_column(view, col)
+  gtk_scrolled_window_set_propagate_natural_width(sw, 0)
   gtk_container_add(sw, view)
   tv.handle = sw
   tv.inner = view
@@ -1626,6 +2127,33 @@ proc messageDlg*(text: string, kind: TMsgDlgType, buttons: TMsgButtons): TModalR
 
 proc showMessage*(text: string) =
   discard messageDlg(text, mtInfo, {mbOK})
+
+proc editStringList*(title, text: string): tuple[ok: bool, text: string] =
+  ## Edit one entry per line. Cancel, and a headless run, leave the text alone.
+  if headless: return (false, text)
+  ensureGtk()
+  let dlg = gtk_dialog_new_with_buttons(title.cstring, dialogParent(), GtkDialogModal.cint,
+    "_Cancel".cstring, GtkResponseCancel.cint, "_OK".cstring, GtkResponseOk.cint, nil)
+  gtk_window_set_default_size(dlg, 420, 360)
+  let scroll = gtk_scrolled_window_new(nil, nil)
+  gtk_scrolled_window_set_policy(scroll, 1, 1)
+  gtk_scrolled_window_set_shadow_type(scroll, 1)
+  gtk_scrolled_window_set_min_content_height(scroll, 240)
+  gtk_scrolled_window_set_min_content_width(scroll, 360)
+  let view = gtk_text_view_new()
+  gtk_text_view_set_monospace(view, 1)
+  gtk_text_view_set_wrap_mode(view, 0)
+  setBufferText(gtk_text_view_get_buffer(view), text)
+  gtk_container_add(scroll, view)
+  gtk_box_pack_start(gtk_dialog_get_content_area(dlg), scroll, 1, 1, 8)
+  gtk_widget_show_all(dlg)
+  gtk_widget_grab_focus(view)
+  let response = gtk_dialog_run(dlg)
+  if response == GtkResponseOk:
+    result = (true, textOfBuffer(gtk_text_view_get_buffer(view)))
+  else:
+    result = (false, text)
+  gtk_widget_destroy(dlg)
 
 proc hideWalk(c: TControl) =
   if not c.fVisible and c.handle != nil: gtk_widget_hide(c.handle)
@@ -2300,6 +2828,19 @@ proc registerWidgets() =
   propEvent("TEdit", "OnChange", "notify")
   setDefaultEvent("TEdit", "OnChange")
 
+  registerClass("TSpinEdit", "TWinControl", proc(o: TComponent): TComponent = TSpinEdit.new(o))
+  addPalette("TSpinEdit", "Standard", "SpinEdit")
+  propInt("TSpinEdit", "Value", proc(c: TComponent): int = TSpinEdit(c).fValue,
+    proc(c: TComponent, v: int) = TSpinEdit(c).value = v)
+  propInt("TSpinEdit", "MinValue", proc(c: TComponent): int = TSpinEdit(c).fMin,
+    proc(c: TComponent, v: int) = TSpinEdit(c).minValue = v)
+  propInt("TSpinEdit", "MaxValue", proc(c: TComponent): int = TSpinEdit(c).fMax,
+    proc(c: TComponent, v: int) = TSpinEdit(c).maxValue = v)
+  propInt("TSpinEdit", "Increment", proc(c: TComponent): int = TSpinEdit(c).fIncrement,
+    proc(c: TComponent, v: int) = TSpinEdit(c).increment = v)
+  propEvent("TSpinEdit", "OnChange", "notify")
+  setDefaultEvent("TSpinEdit", "OnChange")
+
   registerClass("TMemo", "TWinControl", proc(o: TComponent): TComponent = TMemo.new(o))
   addPalette("TMemo", "Standard", "Memo")
   propStr("TMemo", "Lines", pkStrings, proc(c: TComponent): string = TMemo(c).fText,
@@ -2318,6 +2859,13 @@ proc registerWidgets() =
     proc(c: TComponent, v: bool) = TCheckBox(c).checked = v)
   setDefaultEvent("TCheckBox", "OnClick")
 
+  registerClass("TToggleBox", "TWinControl", proc(o: TComponent): TComponent = TToggleBox.new(o))
+  addPalette("TToggleBox", "Standard", "ToggleBox")
+  publishCaption("TToggleBox")
+  propBool("TToggleBox", "Checked", proc(c: TComponent): bool = TToggleBox(c).fChecked,
+    proc(c: TComponent, v: bool) = TToggleBox(c).checked = v)
+  setDefaultEvent("TToggleBox", "OnClick")
+
   registerClass("TRadioButton", "TWinControl", proc(o: TComponent): TComponent = TRadioButton.new(o))
   addPalette("TRadioButton", "Standard", "Radio")
   publishCaption("TRadioButton")
@@ -2333,6 +2881,17 @@ proc registerWidgets() =
     proc(c: TComponent, v: int) = TListBox(c).itemIndex = v)
   propEvent("TListBox", "OnChange", "notify")
   setDefaultEvent("TListBox", "OnClick")
+
+  registerClass("TCheckListBox", "TWinControl", proc(o: TComponent): TComponent = TCheckListBox.new(o))
+  addPalette("TCheckListBox", "Standard", "CheckList")
+  propStr("TCheckListBox", "Items", pkStrings, proc(c: TComponent): string = TCheckListBox(c).fItems.join("\n"),
+    proc(c: TComponent, v: string) = TCheckListBox(c).items = parseList(v))
+  propStr("TCheckListBox", "Checks", pkStrings, proc(c: TComponent): string = TCheckListBox(c).checksText,
+    proc(c: TComponent, v: string) = TCheckListBox(c).applyChecks(v))
+  propInt("TCheckListBox", "ItemIndex", proc(c: TComponent): int = TCheckListBox(c).fItemIndex,
+    proc(c: TComponent, v: int) = TCheckListBox(c).itemIndex = v)
+  propEvent("TCheckListBox", "OnClickCheck", "notify")
+  setDefaultEvent("TCheckListBox", "OnClickCheck")
 
   registerClass("TComboBox", "TWinControl", proc(o: TComponent): TComponent = TComboBox.new(o))
   addPalette("TComboBox", "Standard", "ComboBox")
@@ -2351,6 +2910,15 @@ proc registerWidgets() =
   registerClass("TGroupBox", "TWinControl", proc(o: TComponent): TComponent = TGroupBox.new(o))
   addPalette("TGroupBox", "Standard", "GroupBox")
   publishCaption("TGroupBox")
+
+  registerClass("TCheckGroup", "TWinControl", proc(o: TComponent): TComponent = TCheckGroup.new(o))
+  addPalette("TCheckGroup", "Standard", "CheckGroup")
+  publishCaption("TCheckGroup")
+  propStr("TCheckGroup", "Items", pkStrings, proc(c: TComponent): string = TCheckGroup(c).fItems.join("\n"),
+    proc(c: TComponent, v: string) = TCheckGroup(c).items = parseList(v))
+  propStr("TCheckGroup", "Checks", pkStrings, proc(c: TComponent): string = TCheckGroup(c).checksText,
+    proc(c: TComponent, v: string) = TCheckGroup(c).applyChecks(v))
+  setDefaultEvent("TCheckGroup", "OnClick")
 
   registerClass("TRadioGroup", "TWinControl", proc(o: TComponent): TComponent = TRadioGroup.new(o))
   addPalette("TRadioGroup", "Standard", "RadioGroup")
@@ -2407,6 +2975,20 @@ proc registerWidgets() =
   propInt("TTrackBar", "Position", proc(c: TComponent): int = TTrackBar(c).fPosition, proc(c: TComponent, v: int) = TTrackBar(c).position = v)
   propEvent("TTrackBar", "OnChange", "notify")
   setDefaultEvent("TTrackBar", "OnChange")
+
+  registerClass("TScrollBar", "TWinControl", proc(o: TComponent): TComponent = TScrollBar.new(o))
+  addPalette("TScrollBar", "Common Controls", "ScrollBar")
+  propInt("TScrollBar", "Min", proc(c: TComponent): int = TScrollBar(c).fMin, proc(c: TComponent, v: int) = TScrollBar(c).min = v)
+  propInt("TScrollBar", "Max", proc(c: TComponent): int = TScrollBar(c).fMax, proc(c: TComponent, v: int) = TScrollBar(c).max = v)
+  propInt("TScrollBar", "Position", proc(c: TComponent): int = TScrollBar(c).fPosition, proc(c: TComponent, v: int) = TScrollBar(c).position = v)
+  propInt("TScrollBar", "PageSize", proc(c: TComponent): int = TScrollBar(c).fPage, proc(c: TComponent, v: int) = TScrollBar(c).pageSize = v)
+  propInt("TScrollBar", "SmallChange", proc(c: TComponent): int = TScrollBar(c).fSmall, proc(c: TComponent, v: int) = TScrollBar(c).smallChange = v)
+  propInt("TScrollBar", "LargeChange", proc(c: TComponent): int = TScrollBar(c).fLarge, proc(c: TComponent, v: int) = TScrollBar(c).largeChange = v)
+  propEnum("TScrollBar", "Orientation", ["orHorizontal", "orVertical"],
+    proc(c: TComponent): string = $TScrollBar(c).fOrientation,
+    proc(c: TComponent, v: string) = TScrollBar(c).orientation = parseEnum[TOrientation](v.strip))
+  propEvent("TScrollBar", "OnChange", "notify")
+  setDefaultEvent("TScrollBar", "OnChange")
 
   registerClass("TProgressBar", "TWinControl", proc(o: TComponent): TComponent = TProgressBar.new(o))
   addPalette("TProgressBar", "Common Controls", "ProgressBar")

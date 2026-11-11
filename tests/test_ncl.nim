@@ -116,6 +116,11 @@ if side.left != 0 or side.width != 180 or side.height != 360: fail("side wide " 
 if mark.width != 180: fail("mark wide " & $mark.width)
 if split.left != 180 or split.width != 6: fail("split wide")
 if page.left != 186 or page.width != 614 or page.top != 36: fail("page wide " & $page.left & "," & $page.top & " " & $page.width)
+nudgeSplitter(split, 40, 0)
+if side.width != 220 or split.left != 220: fail("split drag " & $side.width & " at " & $split.left)
+nudgeSplitter(split, -400, 0)
+if side.width != 20: fail("split floor " & $side.width)
+side.width = 180
 let rightPane = TPanel.new(stackForm)
 rightPane.name = "Right"
 rightPane.bevel = bvNone
@@ -563,5 +568,120 @@ selectComponent(deep)
 if designOrder(true) != 1 or deep.parent != deepBox: fail("inner order")
 selectComponent(clipTimer)
 if designOrder(true) != 0: fail("timer order")
+
+let skipped = editStringList("Items", "City\nHarbor")
+if skipped.ok or skipped.text != "City\nHarbor": fail("strings dialog headless")
+
+let spinHost = TForm.new()
+spinHost.name = "SpinHost"
+let spin = TSpinEdit.new(spinHost)
+spin.parent = spinHost
+spin.minValue = -3
+spin.maxValue = 20
+spin.increment = 3
+spin.value = 100
+if spin.value != 20: fail("spin clamp " & $spin.value)
+spin.value = 7
+let spinText = saveNfm(spinHost)
+if "Value = 7" notin spinText or "MinValue = -3" notin spinText or
+    "MaxValue = 20" notin spinText or "Increment = 3" notin spinText:
+  fail("spin stream")
+let spinBack = TForm.new()
+loadNfm(spinBack, spinText)
+let spin2 = spinBack.findComponent(spin.name)
+if spin2 == nil or not (spin2 of TSpinEdit): fail("spin reload type")
+let gotSpin = TSpinEdit(spin2)
+if gotSpin.value != 7 or gotSpin.minValue != -3 or gotSpin.maxValue != 20 or gotSpin.increment != 3:
+  fail("spin reload " & $gotSpin.value)
+let spinSrc = generateUnit(spinHost, "")
+if "TSpinEdit" notin spinSrc: fail("spin field")
+
+let checkHost = TForm.new()
+checkHost.name = "CheckHost"
+let checks = TCheckListBox.new(checkHost)
+checks.parent = checkHost
+checks.items = @["Red", "Green", "Blue"]
+checks.setItemChecked(0, true)
+checks.setItemChecked(2, true)
+if not checks.itemChecked(0) or checks.itemChecked(1) or not checks.itemChecked(2): fail("check marks")
+checks.items = @["Red", "Green"]
+if not checks.itemChecked(0) or checks.itemChecked(1): fail("check kept")
+checks.items = @["Red", "Green", "Blue"]
+checks.setItemChecked(2, true)
+let checkText = saveNfm(checkHost)
+if "Red" notin checkText or "True" notin checkText: fail("check stream")
+let checkBack = TForm.new()
+loadNfm(checkBack, checkText)
+let checks2 = checkBack.findComponent(checks.name)
+if checks2 == nil or not (checks2 of TCheckListBox): fail("check reload type")
+let gotChecks = TCheckListBox(checks2)
+if gotChecks.items.len != 3 or not gotChecks.itemChecked(0) or gotChecks.itemChecked(1) or not gotChecks.itemChecked(2):
+  fail("check reload")
+
+let groupHost = TForm.new()
+groupHost.name = "GroupHost"
+let group = TCheckGroup.new(groupHost)
+group.parent = groupHost
+group.caption = "Colors"
+group.items = @["Red", "Green", "Blue"]
+group.setItemChecked(0, true)
+group.setItemChecked(2, true)
+if not group.itemChecked(0) or group.itemChecked(1) or not group.itemChecked(2): fail("group marks")
+group.items = @["Red", "Green"]
+if not group.itemChecked(0) or group.itemChecked(1): fail("group kept")
+group.items = @["Red", "Green", "Blue"]
+group.setItemChecked(2, true)
+let groupText = saveNfm(groupHost)
+if "Colors" notin groupText or "True" notin groupText: fail("group stream")
+let groupBack = TForm.new()
+loadNfm(groupBack, groupText)
+let group2 = groupBack.findComponent(group.name)
+if group2 == nil or not (group2 of TCheckGroup): fail("group reload type")
+let gotGroup = TCheckGroup(group2)
+if gotGroup.caption != "Colors" or gotGroup.items.len != 3 or
+    not gotGroup.itemChecked(0) or gotGroup.itemChecked(1) or not gotGroup.itemChecked(2):
+  fail("group reload")
+
+let scrollHost = TForm.new()
+scrollHost.name = "ScrollHost"
+let scroller = TScrollBar.new(scrollHost)
+scroller.parent = scrollHost
+scroller.max = 40
+scroller.pageSize = 8
+scroller.position = 100
+if scroller.position != 40: fail("bar clamp " & $scroller.position)
+scroller.position = 12
+scroller.smallChange = 2
+scroller.largeChange = 8
+scroller.orientation = orVertical
+if scroller.orientation != orVertical or scroller.height <= scroller.width:
+  fail("bar vertical " & $scroller.width & "x" & $scroller.height)
+let scrollText = saveNfm(scrollHost)
+if "Position = 12" notin scrollText or "PageSize = 8" notin scrollText or "orVertical" notin scrollText:
+  fail("bar stream")
+let scrollBack = TForm.new()
+loadNfm(scrollBack, scrollText)
+let scroller2 = scrollBack.findComponent(scroller.name)
+if scroller2 == nil or not (scroller2 of TScrollBar): fail("bar reload type")
+let gotScroll = TScrollBar(scroller2)
+if gotScroll.position != 12 or gotScroll.max != 40 or gotScroll.pageSize != 8 or
+    gotScroll.smallChange != 2 or gotScroll.orientation != orVertical:
+  fail("bar reload")
+
+let toggleHost = TForm.new()
+toggleHost.name = "ToggleHost"
+let toggle = TToggleBox.new(toggleHost)
+toggle.parent = toggleHost
+toggle.caption = "Armed"
+toggle.checked = true
+if not toggle.checked: fail("toggle checked")
+let toggleText = saveNfm(toggleHost)
+if "Armed" notin toggleText or "Checked = True" notin toggleText: fail("toggle stream")
+let toggleBack = TForm.new()
+loadNfm(toggleBack, toggleText)
+let toggle2 = toggleBack.findComponent(toggle.name)
+if toggle2 == nil or not (toggle2 of TToggleBox): fail("toggle reload type")
+let gotToggle = TToggleBox(toggle2)
+if gotToggle.caption != "Armed" or not gotToggle.checked: fail("toggle reload")
 
 echo "ok"

@@ -32,7 +32,9 @@ var
   palette: TScrollBox
   paletteOn: bool = true
   tree: TTreeView
+  treeSplit: TSplitter
   inspectorPane: TPanel
+  inspSplit: TSplitter
   inspector: TScrollBox
   pages: TPageControl
   designSheet: TTabSheet
@@ -276,7 +278,9 @@ proc useCodeChrome(code: bool) =
   ## Code and Explore leave them hidden. Design brings them back.
   ## The View check remembers whether Design should show the palette.
   if tree != nil: tree.visible = not code
+  if treeSplit != nil: treeSplit.visible = not code
   if inspectorPane != nil: inspectorPane.visible = not code
+  if inspSplit != nil: inspSplit.visible = not code
   if palette != nil: palette.visible = paletteOn and not code
   markActiveView()
 
@@ -394,6 +398,31 @@ proc noteOne() =
 proc bindOpenEvent(btn: TButton, ed: TEdit, comp: TComponent, prop: string) =
   btn.onClick = proc(sender: TObject) = openEvent(comp, prop, ed)
   ed.onDblClick = proc(sender: TObject) = openEvent(comp, prop, ed)
+
+proc openStrings(comp: TComponent, prop: string, ed: TMemo) =
+  ## One line is one entry. OK writes that text, including onto the other
+  ## selected controls that have this property.
+  if comp == nil: return
+  var current = ""
+  if ed != nil: current = ed.text
+  else:
+    try: current = getProp(comp, prop)
+    except CatchableError: return
+  let got = editStringList(prop, current)
+  if not got.ok: return
+  let n = applyProp(prop, got.text)
+  if n == 0: return
+  if ed != nil:
+    syncing = true
+    ed.text = got.text
+    syncing = false
+  if n == 1:
+    var lines = 0
+    if got.text.len > 0: lines = got.text.splitLines.len
+    setStatus(prop & ", " & $lines & " lines")
+
+proc bindOpenStrings(btn: TButton, ed: TMemo, comp: TComponent, prop: string) =
+  btn.onClick = proc(sender: TObject) = openStrings(comp, prop, ed)
 
 proc bindEdit(ed: TEdit, comp: TComponent, prop: string) =
   ed.onChange = proc(sender: TObject) =
@@ -600,11 +629,19 @@ proc rebuildInspector() =
       let ed = TMemo.new(ideForm)
       ed.left = 110
       ed.top = y
-      ed.width = 130
+      ed.width = 78
       ed.height = 52
       ed.text = value
       ed.parent = inspector
       bindMemo(ed, comp, p.name)
+      let go = TButton.new(ideForm)
+      go.caption = "..."
+      go.left = 190
+      go.top = y
+      go.width = 48
+      go.height = 24
+      go.parent = inspector
+      bindOpenStrings(go, ed, comp, p.name)
       y += 56
     of pkEvent:
       let ed = TEdit.new(ideForm)
@@ -1632,17 +1669,27 @@ proc buildChrome() =
   tree = TTreeView.new(ideForm)
   tree.parent = ideForm
   tree.align = alLeft
-  tree.width = 190
+  tree.width = 260
   tree.onSelect = proc(sender: TObject, node: TTreeNode) =
     if syncing or node == nil or node.obj == nil: return
     if node.obj of TComponent:
       selectComponent(TComponent(node.obj))
+  treeSplit = TSplitter.new(ideForm)
+  treeSplit.align = alLeft
+  treeSplit.width = 6
+  treeSplit.minSize = 140
+  treeSplit.parent = ideForm
 
   inspectorPane = TPanel.new(ideForm)
   inspectorPane.parent = ideForm
   inspectorPane.align = alRight
-  inspectorPane.width = 260
+  inspectorPane.width = 320
   inspectorPane.bevel = bvNone
+  inspSplit = TSplitter.new(ideForm)
+  inspSplit.align = alRight
+  inspSplit.width = 6
+  inspSplit.minSize = 200
+  inspSplit.parent = ideForm
   let right = inspectorPane
   let propBtn = TButton.new(ideForm)
   propBtn.caption = "Properties"

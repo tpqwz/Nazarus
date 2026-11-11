@@ -36,6 +36,10 @@ proc gtk_widget_set_margin_top(w: pointer, m: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_set_margin_bottom(w: pointer, m: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_set_can_focus(w: pointer, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_grab_focus(w: pointer) {.importc, dynlib: GtkLib.}
+proc gtk_widget_get_window(w: pointer): pointer {.importc, dynlib: GtkLib.}
+proc gtk_grab_add(w: pointer) {.importc, dynlib: GtkLib.}
+proc gtk_grab_remove(w: pointer) {.importc, dynlib: GtkLib.}
+proc gdk_window_get_origin(w: pointer, x, y: ptr cint): cint {.importc, dynlib: GdkLib.}
 proc gtk_widget_set_app_paintable(w: pointer, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_add_events(w: pointer, ev: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_queue_draw(w: pointer) {.importc, dynlib: GtkLib.}
@@ -60,15 +64,16 @@ proc gtk_widget_get_preferred_height_for_width(w: pointer, width: cint, minimum,
 proc gtk_widget_get_preferred_width(w: pointer, minimum, natural: ptr cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_size_allocate(w: pointer, a: ptr GtkAllocation) {.importc, dynlib: GtkLib.}
 proc gtk_widget_get_allocation(w: pointer, a: ptr GtkAllocation) {.importc, dynlib: GtkLib.}
-proc gtk_widget_get_window(w: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gdk_window_get_width(w: pointer): cint {.importc, dynlib: GdkLib.}
 proc gdk_window_get_height(w: pointer): cint {.importc, dynlib: GdkLib.}
 proc gtk_scrolled_window_set_min_content_height(s: pointer, h: cint) {.importc, dynlib: GtkLib.}
+proc gtk_scrolled_window_set_propagate_natural_width(s: pointer, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_scrolled_window_set_min_content_width(s: pointer, w: cint) {.importc, dynlib: GtkLib.}
 proc gtk_widget_get_style_context(w: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gtk_container_add(c, w: pointer) {.importc, dynlib: GtkLib.}
 proc gtk_container_remove(c, w: pointer) {.importc, dynlib: GtkLib.}
 proc gtk_container_get_children(c: pointer): pointer {.importc, dynlib: GtkLib.}
+proc gtk_bin_get_child(b: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gtk_container_check_resize(c: pointer) {.importc, dynlib: GtkLib.}
 proc gtk_box_new(orient, spacing: cint): pointer {.importc, dynlib: GtkLib.}
 proc gtk_box_pack_start(b, w: pointer, expand, fill: cint, pad: cuint) {.importc, dynlib: GtkLib.}
@@ -104,6 +109,13 @@ proc gtk_button_new_with_label(s: cstring): pointer {.importc, dynlib: GtkLib.}
 proc gtk_button_set_label(b: pointer, s: cstring) {.importc, dynlib: GtkLib.}
 proc gtk_button_set_use_underline(b: pointer, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_button_set_relief(b: pointer, r: cint) {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_new_with_range(minv, maxv, step: cdouble): pointer {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_set_range(s: pointer, minv, maxv: cdouble) {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_set_increments(s: pointer, step, page: cdouble) {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_get_value(s: pointer): cdouble {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_set_value(s: pointer, v: cdouble) {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_set_numeric(s: pointer, v: cint) {.importc, dynlib: GtkLib.}
+proc gtk_spin_button_set_digits(s: pointer, digits: cint) {.importc, dynlib: GtkLib.}
 proc gtk_entry_new(): pointer {.importc, dynlib: GtkLib.}
 proc gtk_entry_set_text(e: pointer, s: cstring) {.importc, dynlib: GtkLib.}
 proc gtk_entry_get_text(e: pointer): cstring {.importc, dynlib: GtkLib.}
@@ -157,6 +169,7 @@ proc gtk_adjustment_get_upper(a: pointer): cdouble {.importc, dynlib: GtkLib.}
 proc gtk_adjustment_get_page_size(a: pointer): cdouble {.importc, dynlib: GtkLib.}
 proc gtk_check_button_new_with_label(s: cstring): pointer {.importc, dynlib: GtkLib.}
 proc gtk_toggle_button_set_active(b: pointer, v: cint) {.importc, dynlib: GtkLib.}
+proc gtk_toggle_button_new_with_label(s: cstring): pointer {.importc, dynlib: GtkLib.}
 proc gtk_toggle_button_get_active(b: pointer): cint {.importc, dynlib: GtkLib.}
 proc gtk_radio_button_new_with_label(group: pointer, s: cstring): pointer {.importc, dynlib: GtkLib.}
 proc gtk_radio_button_new_with_label_from_widget(w: pointer, s: cstring): pointer {.importc, dynlib: GtkLib.}
@@ -183,6 +196,10 @@ proc gtk_notebook_set_tab_label_text(n, child: pointer, t: cstring) {.importc, d
 proc gtk_notebook_set_current_page(n: pointer, i: cint) {.importc, dynlib: GtkLib.}
 proc gtk_notebook_set_show_tabs(n: pointer, show: cint) {.importc, dynlib: GtkLib.}
 proc gtk_notebook_get_current_page(n: pointer): cint {.importc, dynlib: GtkLib.}
+proc gtk_adjustment_new(value, lower, upper, step, page, pageSize: cdouble): pointer {.importc, dynlib: GtkLib.}
+proc gtk_adjustment_configure(a: pointer, value, lower, upper, step, page, pageSize: cdouble) {.importc, dynlib: GtkLib.}
+proc gtk_range_get_adjustment(r: pointer): pointer {.importc, dynlib: GtkLib.}
+proc gtk_scrollbar_new(orient: cint, adjustment: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gtk_scale_new_with_range(orient: cint, minv, maxv, step: cdouble): pointer {.importc, dynlib: GtkLib.}
 proc gtk_scale_set_draw_value(s: pointer, v: cint) {.importc, dynlib: GtkLib.}
 proc gtk_range_set_value(r: pointer, v: cdouble) {.importc, dynlib: GtkLib.}
@@ -199,6 +216,8 @@ proc gtk_tree_view_column_new(): pointer {.importc, dynlib: GtkLib.}
 proc gtk_tree_view_column_set_title(c: pointer, t: cstring) {.importc, dynlib: GtkLib.}
 proc gtk_tree_view_column_pack_start(c, rend: pointer, expand: cint) {.importc, dynlib: GtkLib.}
 proc gtk_tree_view_column_add_attribute(c, rend: pointer, attr: cstring, col: cint) {.importc, dynlib: GtkLib.}
+proc gtk_tree_view_column_set_sizing(c: pointer, typ: cint) {.importc, dynlib: GtkLib.}
+proc gtk_tree_view_column_set_fixed_width(c: pointer, w: cint) {.importc, dynlib: GtkLib.}
 proc gtk_cell_renderer_text_new(): pointer {.importc, dynlib: GtkLib.}
 proc gtk_tree_store_newv(n: cint, types: ptr uint64): pointer {.importc, dynlib: GtkLib.}
 proc gtk_tree_store_append(store, iter, parent: pointer) {.importc, dynlib: GtkLib.}
@@ -234,6 +253,9 @@ proc gtk_file_filter_set_name(f: pointer, n: cstring) {.importc, dynlib: GtkLib.
 proc gtk_file_filter_add_pattern(f: pointer, p: cstring) {.importc, dynlib: GtkLib.}
 proc gtk_dialog_run(d: pointer): cint {.importc, dynlib: GtkLib.}
 proc gtk_dialog_add_button(d: pointer, text: cstring, response: cint): pointer {.importc, dynlib: GtkLib.}
+proc gtk_dialog_new_with_buttons(title: cstring, parent: pointer, flags: cint,
+  b1: cstring, r1: cint, b2: cstring, r2: cint, fin: pointer): pointer {.importc, dynlib: GtkLib.}
+proc gtk_dialog_get_content_area(d: pointer): pointer {.importc, dynlib: GtkLib.}
 proc gtk_message_dialog_new(parent: pointer, flags, typ, buttons: cint, fmt, msg: cstring): pointer {.importc, dynlib: GtkLib.}
 proc gtk_css_provider_new(): pointer {.importc, dynlib: GtkLib.}
 proc gtk_css_provider_load_from_data(p: pointer, data: cstring, len: clong, err: pointer): cint {.importc, dynlib: GtkLib.}
@@ -242,6 +264,7 @@ proc gtk_widget_get_preferred_size(w, minimum, natural: pointer) {.importc, dynl
 
 proc gdk_screen_get_rgba_visual(screen: pointer): pointer {.importc, dynlib: GdkLib.}
 proc gdk_event_get_coords(ev: pointer, x, y: ptr cdouble): cint {.importc, dynlib: GdkLib.}
+proc gdk_event_get_root_coords(ev: pointer, x, y: ptr cdouble): cint {.importc, dynlib: GdkLib.}
 proc gdk_event_get_button(ev: pointer, b: ptr cuint): cint {.importc, dynlib: GdkLib.}
 proc gdk_event_get_state(ev: pointer, state: ptr cuint): cint {.importc, dynlib: GdkLib.}
 proc gdk_event_get_keyval(ev: pointer, key: ptr cuint): cint {.importc, dynlib: GdkLib.}
