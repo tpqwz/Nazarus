@@ -25,6 +25,9 @@ var
   downX, downY, curX, curY: int
   startL, startT, startW, startH: int
   moveStart: seq[tuple[c: TControl, l, t: int]]
+  resizeOne: TControl
+  sizeStart: seq[tuple[c: TControl, hx, hy, hw, hh, l, t: int]]
+  boxX, boxY, boxW, boxH: int
 
 var
   onDesignSelect*: proc(c: TComponent) {.closure.}
@@ -109,10 +112,36 @@ proc handlePoints(x, y, w, h: int): array[8, tuple[x, y: int]] =
     (x, y + h div 2)
   ]
 
+proc selectionRoots(): seq[TControl]
+
+proc unionHost(roots: seq[TControl]): tuple[x, y, w, h: int] =
+  ## The box around every selected root, in host coordinates.
+  if roots.len == 0: return
+  var x1 = high(int)
+  var y1 = high(int)
+  var x2 = low(int)
+  var y2 = low(int)
+  for c in roots:
+    let r = hostRect(c)
+    if r.x < x1: x1 = r.x
+    if r.y < y1: y1 = r.y
+    if r.x + r.w > x2: x2 = r.x + r.w
+    if r.y + r.h > y2: y2 = r.y + r.h
+  (x1, y1, max(0, x2 - x1), max(0, y2 - y1))
+
 proc hitHandle(mx, my: int): int =
   result = -1
-  if dSel == nil or not (dSel of TControl): return
-  let r = hostRect(TControl(dSel))
+  var r: tuple[x, y, w, h: int]
+  if dSels.len > 1:
+    let roots = selectionRoots()
+    if roots.len == 0: return
+    if roots.len == 1: r = hostRect(roots[0])
+    else: r = unionHost(roots)
+  elif dSel of TControl:
+    r = hostRect(TControl(dSel))
+  else:
+    return
+  if r.w <= 0 or r.h <= 0: return
   let pts = handlePoints(r.x, r.y, r.w, r.h)
   for i, p in pts:
     if abs(mx - p.x) <= 5 and abs(my - p.y) <= 5: return i
@@ -442,18 +471,89 @@ proc applyResize(c: TControl, mx, my: int) =
     minH = max(60, f.borderTop + f.borderBottom + 16)
   c.setBounds(l, t, max(minW, w), max(minH, h))
 
+proc resizedBox(x, y, w, h, dx, dy, handle: int): tuple[x, y, w, h: int] =
+  ## The box after dragging one handle. The edges that the handle does not
+  ## own stay put. A box stays at least 8 pixels on a side.
+  let right = x + w
+  let bottom = y + h
+  result = (x, y, w, h)
+  case handle
+  of 0:
+    result.x = snapv(x + dx)
+    result.y = snapv(y + dy)
+    result.w = right - result.x
+    result.h = bottom - result.y
+  of 1:
+    result.y = snapv(y + dy)
+    result.h = bottom - result.y
+  of 2:
+    result.y = snapv(y + dy)
+    result.w = snapv(right + dx) - x
+    result.h = bottom - result.y
+  of 3:
+    result.w = snapv(right + dx) - x
+  of 4:
+    result.w = snapv(right + dx) - x
+    result.h = snapv(bottom + dy) - y
+  of 5:
+    result.h = snapv(bottom + dy) - y
+  of 6:
+    result.x = snapv(x + dx)
+    result.w = right - result.x
+    result.h = snapv(bottom + dy) - y
+  of 7:
+    result.x = snapv(x + dx)
+    result.w = right - result.x
+  else: discard
+  if result.w < 8: result.w = 8
+  if result.h < 8: result.h = 8
+
+proc armResize(handle: int) =
+  ## Remember the box that this drag scales. One control uses its own edges.
+  ## Several controls share the box around the selection roots.
+  dragHandle = handle
+  sizeStart.setLen(0)
+  resizeOne = nil
+  if dSels.len <= 1:
+    if dSel of TControl: resizeOne = TControl(dSel)
+  else:
+    let roots = selectionRoots()
+    if roots.len <= 1:
+      if roots.len == 1: resizeOne = roots[0]
+    else:
+      let box = unionHost(roots)
+      boxX = box.x
+      boxY = box.y
+      boxW = max(1, box.w)
+      boxH = max(1, box.h)
+      for c in roots:
+        let r = hostRect(c)
+        sizeStart.add((c, r.x, r.y, r.w, r.h, c.left, c.top))
+  if resizeOne != nil:
+    startL = resizeOne.left
+    startT = resizeOne.top
+    startW = resizeOne.width
+    startH = resizeOne.height
+
+proc applyGroupResize(mx, my: int) =
+  ## Scale each selected root inside the shared box. A child of a selected
+  ## parent is not in sizeStart, so it keeps its place inside that parent.
+  if sizeStart.len < 2: return
+  let nb = resizedBox(boxX, boxY, boxW, boxH, mx - downX, my - downY, dragHandle)
+  for it in sizeStart:
+    let nx = nb.x + (it.hx - boxX) * nb.w div boxW
+    let ny = nb.y + (it.hy - boxY) * nb.h div boxH
+    let nw = max(8, it.hw * nb.w div boxW)
+    let nh = max(8, it.hh * nb.h div boxH)
+    it.c.setBounds(it.l + nx - it.hx, it.t + ny - it.hy, nw, nh)
+
 proc designDragResize*(handle, dx, dy: int) =
   ## Drag resize handle `handle` by `(dx, dy)` from the selection's current bounds.
-  if dSel == nil or not (dSel of TControl): return
-  let c = TControl(dSel)
-  dragHandle = handle
-  startL = c.left
-  startT = c.top
-  startW = c.width
-  startH = c.height
+  armResize(handle)
   downX = 0
   downY = 0
-  applyResize(c, dx, dy)
+  if sizeStart.len > 1: applyGroupResize(dx, dy)
+  elif resizeOne != nil: applyResize(resizeOne, dx, dy)
 
 proc rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh: int): bool =
   ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
@@ -645,14 +745,12 @@ proc onDesignPress(widget, ev, data: pointer): cint {.cdecl.} =
   marqueeAdd = false
   let hit = hitAt(mx, my)
   let h = hitHandle(mx, my)
-  if not extend and dSels.len == 1 and h >= 0 and dSel of TControl:
-    drag = dkResize
-    dragHandle = h
-    let c = TControl(dSel)
-    startL = c.left
-    startT = c.top
-    startW = c.width
-    startH = c.height
+  if not extend and h >= 0:
+    armResize(h)
+    if resizeOne != nil or sizeStart.len > 1:
+      drag = dkResize
+    else:
+      dragHandle = -1
   elif extend and hit != nil and hit != dForm and not onFormTitle(mx, my):
     let adding = not chosen(hit)
     designToggle(hit)
@@ -702,8 +800,9 @@ proc onDesignMotion(widget, ev, data: pointer): cint {.cdecl.} =
       let dy = snapv(my - downY)
       for it in moveStart:
         it.c.setBounds(it.l + dx, it.t + dy, it.c.width, it.c.height)
-  elif dSel of TControl:
-    applyResize(TControl(dSel), mx, my)
+  elif drag == dkResize:
+    if sizeStart.len > 1: applyGroupResize(mx, my)
+    elif resizeOne != nil: applyResize(resizeOne, mx, my)
   redrawDesign()
   if onDesignChange != nil: onDesignChange()
   1
@@ -839,14 +938,50 @@ proc onDesignDraw(widget, cr, data: pointer): cint {.cdecl.} =
         inc xx, dGrid
       inc yy, dGrid
     cairo_fill(cr)
-  let alone = dSels.len == 1
+  var sole: TControl = nil
+  if dSels.len <= 1:
+    if dSel of TControl: sole = TControl(dSel)
+  else:
+    let roots = selectionRoots()
+    if roots.len == 1: sole = roots[0]
   for s in dSels:
     if not (s of TControl): continue
     let c = TControl(s)
+    let handles = sole == c
     if c == dForm and dHost != nil and widget == dHost.client:
-      paintChrome(cr, c.left, c.top, c.width, c.height, c.name & ": " & c.className, alone)
+      paintChrome(cr, c.left, c.top, c.width, c.height, c.name & ": " & c.className, handles)
     elif c != dForm and c.parent != nil and widget == c.parent.client:
-      paintChrome(cr, c.left, c.top, c.width, c.height, c.name & ": " & c.className, alone)
+      paintChrome(cr, c.left, c.top, c.width, c.height, c.name & ": " & c.className, handles)
+  if dSels.len > 1 and dForm != nil:
+    let roots = selectionRoots()
+    if roots.len > 1:
+      var parent = roots[0].parent
+      var shared = parent != nil
+      for c in roots:
+        if c.parent != parent: shared = false
+      if shared and widget == parent.client:
+        var x1 = high(int)
+        var y1 = high(int)
+        var x2 = low(int)
+        var y2 = low(int)
+        for c in roots:
+          if c.left < x1: x1 = c.left
+          if c.top < y1: y1 = c.top
+          if c.left + c.width > x2: x2 = c.left + c.width
+          if c.top + c.height > y2: y2 = c.top + c.height
+        paintChrome(cr, x1, y1, x2 - x1, y2 - y1, $roots.len & " controls", true)
+      elif not shared and widget == dForm.client:
+        var x1 = high(int)
+        var y1 = high(int)
+        var x2 = low(int)
+        var y2 = low(int)
+        for c in roots:
+          let o = formClientOrigin(c, dForm)
+          if o.x < x1: x1 = o.x
+          if o.y < y1: y1 = o.y
+          if o.x + c.width > x2: x2 = o.x + c.width
+          if o.y + c.height > y2: y2 = o.y + c.height
+        paintChrome(cr, x1, y1, max(0, x2 - x1), max(0, y2 - y1), $roots.len & " controls", true)
   if drag == dkMarquee and dHost != nil and widget == dHost.client and
       abs(curX - downX) + abs(curY - downY) >= 3:
     let rx = float(min(downX, curX))
